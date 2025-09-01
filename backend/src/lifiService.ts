@@ -29,7 +29,10 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
     const tokenPairs: { from: any; to: any }[] = [];
 
     for (let i = 0; i < tokens.length; i++) {
-      for (let j = i + 1; j < tokens.length; j++) {
+      for (let j = 0; j < tokens.length; j++) {
+        // Skip self-pairs (token to itself)
+        if (i === j) continue;
+        
         const from = tokens[i];
         const to = tokens[j];
 
@@ -38,7 +41,9 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
 
         if (!pairs.has(pairKey)) {
           pairs.add(pairKey);
+          // Add both directions for each unique pair
           tokenPairs.push({ from, to });
+          tokenPairs.push({ from: to, to: from });
         }
       }
     }
