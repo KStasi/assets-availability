@@ -1,11 +1,15 @@
 import express from "express";
 import cors from "cors";
+import cron from "node-cron";
 import { runMigrations } from "./migrations";
 import { upsertTokens } from "./tokens";
-import { PairRoutes } from "./types";
+import { fetchAndCacheLiFiData, getCachedRoutes } from "./lifiService";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Etherlink chain ID constant
+const ETHERLINK_CHAIN_ID = 42793;
 
 app.use(cors());
 app.use(express.json());
@@ -13,6 +17,15 @@ app.use(express.json());
 // Run migrations and upsert tokens on startup
 runMigrations();
 upsertTokens();
+
+// Initial data fetch
+fetchAndCacheLiFiData();
+
+// Schedule cron job to fetch LiFi data every 5 minutes
+cron.schedule("*/5 * * * *", () => {
+  console.log("Running scheduled LiFi data fetch...");
+  fetchAndCacheLiFiData();
+});
 
 // Health check endpoint
 app.get("/healthz", (req, res) => {
@@ -37,43 +50,20 @@ app.get("/tokens", (req, res) => {
   );
 });
 
-// Get routes (in-memory mock data)
-app.get("/routes", (req, res) => {
-  // Example placeholder routes
-  const mockRoutes: PairRoutes[] = [
-    {
-      pair: { from: "USDC", to: "WETH" },
-      routes: [
-        { aggregator: "Oku", dexes: ["UniswapV3"] },
-        { aggregator: "LiFi", dexes: ["Curve", "UniswapV3"] },
-        { aggregator: "Jumper", dexes: ["Curve"] },
-      ],
-    },
-    {
-      pair: { from: "WETH", to: "WBTC" },
-      routes: [
-        { aggregator: "Oku", dexes: ["UniswapV3"] },
-        { aggregator: "LiFi", dexes: ["Curve"] },
-      ],
-    },
-    {
-      pair: { from: "USDC", to: "WBTC" },
-      routes: [
-        { aggregator: "Oku", dexes: ["UniswapV3", "SushiSwap"] },
-        { aggregator: "LiFi", dexes: ["Curve", "UniswapV3"] },
-        { aggregator: "Jumper", dexes: ["Curve", "Balancer"] },
-      ],
-    },
-    {
-      pair: { from: "WETH", to: "USDC" },
-      routes: [
-        { aggregator: "Oku", dexes: ["UniswapV3"] },
-        { aggregator: "Jumper", dexes: ["Curve"] },
-      ],
-    },
-  ];
+// Get routes from cached database
+app.get("/routes", async (req, res) => {
+  try {
+    const { routes, lastUpdated } = await getCachedRoutes();
 
-  res.json(mockRoutes);
+    res.json({
+      routes,
+      lastUpdated,
+      count: routes.length,
+    });
+  } catch (error) {
+    console.error("Error in /routes endpoint:", error);
+    res.status(500).json({ error: "Failed to fetch routes" });
+  }
 });
 
 app.listen(PORT, () => {

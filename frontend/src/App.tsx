@@ -14,6 +14,8 @@ interface MatrixData {
   routes: {
     [key: string]: { [key: string]: { [aggregator: string]: string[] } };
   };
+  lastUpdated?: string;
+  routeCount?: number;
 }
 
 function App() {
@@ -39,7 +41,8 @@ function App() {
         }
 
         const tokens: Token[] = await tokensResponse.json();
-        const routes: PairRoutes[] = await routesResponse.json();
+        const routesData = await routesResponse.json();
+        const routes: PairRoutes[] = routesData.routes;
 
         console.log("Tokens data received:", tokens);
         console.log("Routes data received:", routes);
@@ -75,7 +78,13 @@ function App() {
           }
         });
 
-        const finalData = { tokens: tokenSymbols, matrix, routes: routeData };
+        const finalData = {
+          tokens: tokenSymbols,
+          matrix,
+          routes: routeData,
+          lastUpdated: routesData.lastUpdated,
+          routeCount: routesData.count,
+        };
         console.log("Final data structure:", finalData);
         setData(finalData);
         setLoading(false);
@@ -112,7 +121,13 @@ function App() {
       >
         <strong>Debug Info:</strong> Tokens: {data.tokens.join(", ")} | Matrix
         entries: {Object.keys(data.matrix).length} | Routes entries:{" "}
-        {Object.keys(data.routes).length}
+        {Object.keys(data.routes).length} | Route count: {data.routeCount || 0}
+        {data.lastUpdated && (
+          <span>
+            {" "}
+            | Last updated: {new Date(data.lastUpdated).toLocaleString()}
+          </span>
+        )}
       </div>
       <table className="matrix-table">
         <thead>
