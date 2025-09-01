@@ -2,6 +2,12 @@ import { useState, useEffect } from "react";
 import { PairRoutes } from "@assets-availability/types";
 import "./App.css";
 
+interface Token {
+  symbol: string;
+  address: string;
+  decimals: number;
+}
+
 interface MatrixData {
   tokens: string[];
   matrix: { [key: string]: { [key: string]: string[] } };
@@ -16,55 +22,75 @@ function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    console.log("Fetching data from http://localhost:3001/routes");
-    fetch("http://localhost:3001/routes")
-      .then((response) => {
-        console.log("Response received:", response.status, response.ok);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+    const fetchData = async () => {
+      try {
+        console.log("Fetching tokens and routes from backend");
+
+        // Fetch tokens and routes in parallel
+        const [tokensResponse, routesResponse] = await Promise.all([
+          fetch("http://localhost:3001/tokens"),
+          fetch("http://localhost:3001/routes"),
+        ]);
+
+        if (!tokensResponse.ok || !routesResponse.ok) {
+          throw new Error(
+            `HTTP error! tokens: ${tokensResponse.status}, routes: ${routesResponse.status}`
+          );
         }
-        return response.json();
-      })
-      .then((routes: PairRoutes[]) => {
+
+        const tokens: Token[] = await tokensResponse.json();
+        const routes: PairRoutes[] = await routesResponse.json();
+
+        console.log("Tokens data received:", tokens);
         console.log("Routes data received:", routes);
-        const tokens = Array.from(
-          new Set([...routes.flatMap((r) => [r.pair.from, r.pair.to])])
-        ).sort();
+
+        // Extract token symbols and sort them
+        const tokenSymbols = tokens.map((t) => t.symbol).sort();
 
         const matrix: { [key: string]: { [key: string]: string[] } } = {};
         const routeData: {
           [key: string]: { [key: string]: { [aggregator: string]: string[] } };
         } = {};
 
-        tokens.forEach((from) => {
+        // Initialize matrix and route data for all token pairs
+        tokenSymbols.forEach((from) => {
           matrix[from] = {};
           routeData[from] = {};
-          tokens.forEach((to) => {
+          tokenSymbols.forEach((to) => {
             matrix[from][to] = [];
             routeData[from][to] = {};
           });
         });
 
+        // Populate matrix and route data from routes
         routes.forEach((route) => {
           const { from, to } = route.pair;
-          route.routes.forEach((r) => {
-            if (!matrix[from][to].includes(r.aggregator)) {
-              matrix[from][to].push(r.aggregator);
-            }
-            routeData[from][to][r.aggregator] = r.dexes;
-          });
+          if (tokenSymbols.includes(from) && tokenSymbols.includes(to)) {
+            route.routes.forEach((r) => {
+              if (!matrix[from][to].includes(r.aggregator)) {
+                matrix[from][to].push(r.aggregator);
+              }
+              routeData[from][to][r.aggregator] = r.dexes;
+            });
+          }
         });
 
-        const finalData = { tokens, matrix, routes: routeData };
+        const finalData = { tokens: tokenSymbols, matrix, routes: routeData };
         console.log("Final data structure:", finalData);
         setData(finalData);
         setLoading(false);
-      })
-      .catch((err) => {
-        setError(`Failed to fetch data: ${err.message}`);
+      } catch (err) {
+        setError(
+          `Failed to fetch data: ${
+            err instanceof Error ? err.message : "Unknown error"
+          }`
+        );
         setLoading(false);
         console.error("Fetch error:", err);
-      });
+      }
+    };
+
+    fetchData();
   }, []);
 
   if (loading) return <div className="loading">Loading...</div>;
