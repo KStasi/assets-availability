@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { PairRoutes } from "@assets-availability/types";
+import { PairRoutes, SlippageData } from "@assets-availability/types";
 import "./App.css";
 
 interface Token {
@@ -16,6 +16,8 @@ interface MatrixData {
   };
   lastUpdated?: string;
   routeCount?: number;
+  slippageData?: SlippageData[];
+  slippageLastUpdated?: string;
 }
 
 function App() {
@@ -28,21 +30,24 @@ function App() {
       try {
         console.log("Fetching tokens and routes from backend");
 
-        // Fetch tokens and routes in parallel
-        const [tokensResponse, routesResponse] = await Promise.all([
-          fetch("http://localhost:3001/tokens"),
-          fetch("http://localhost:3001/routes"),
-        ]);
+        // Fetch tokens, routes, and slippage data in parallel
+        const [tokensResponse, routesResponse, slippageResponse] =
+          await Promise.all([
+            fetch("http://localhost:3001/tokens"),
+            fetch("http://localhost:3001/routes"),
+            fetch("http://localhost:3001/slippage"),
+          ]);
 
-        if (!tokensResponse.ok || !routesResponse.ok) {
+        if (!tokensResponse.ok || !routesResponse.ok || !slippageResponse.ok) {
           throw new Error(
-            `HTTP error! tokens: ${tokensResponse.status}, routes: ${routesResponse.status}`
+            `HTTP error! tokens: ${tokensResponse.status}, routes: ${routesResponse.status}, slippage: ${slippageResponse.status}`
           );
         }
 
         const tokens: Token[] = await tokensResponse.json();
         const routesData = await routesResponse.json();
         const routes: PairRoutes[] = routesData.routes;
+        const slippageData = await slippageResponse.json();
 
         console.log("Tokens data received:", tokens);
         console.log("Routes data received:", routes);
@@ -84,6 +89,8 @@ function App() {
           routes: routeData,
           lastUpdated: routesData.lastUpdated,
           routeCount: routesData.count,
+          slippageData: slippageData.slippageData,
+          slippageLastUpdated: slippageData.lastUpdated,
         };
         console.log("Final data structure:", finalData);
         setData(finalData);
@@ -126,6 +133,13 @@ function App() {
           <span>
             {" "}
             | Last updated: {new Date(data.lastUpdated).toLocaleString()}
+          </span>
+        )}
+        {data.slippageLastUpdated && (
+          <span>
+            {" "}
+            | Slippage updated:{" "}
+            {new Date(data.slippageLastUpdated).toLocaleString()}
           </span>
         )}
       </div>
@@ -173,6 +187,53 @@ function App() {
           ))}
         </tbody>
       </table>
+
+      {/* Slippage Table */}
+      {data.slippageData && data.slippageData.length > 0 && (
+        <div style={{ marginTop: "40px" }}>
+          <h2>Slippage</h2>
+          <table className="matrix-table">
+            <thead>
+              <tr>
+                <th>Pool</th>
+                <th>$1,000</th>
+                <th>$10,000</th>
+                <th>$50,000</th>
+                <th>$100,000</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.slippageData.map((slippage) => (
+                <tr key={`${slippage.pair.from}-${slippage.pair.to}`}>
+                  <td>
+                    {slippage.pair.from}→{slippage.pair.to}
+                  </td>
+                  <td>
+                    {slippage.amounts["1000"] !== null
+                      ? `${slippage.amounts["1000"]}%`
+                      : "-"}
+                  </td>
+                  <td>
+                    {slippage.amounts["10000"] !== null
+                      ? `${slippage.amounts["10000"]}%`
+                      : "-"}
+                  </td>
+                  <td>
+                    {slippage.amounts["50000"] !== null
+                      ? `${slippage.amounts["50000"]}%`
+                      : "-"}
+                  </td>
+                  <td>
+                    {slippage.amounts["100000"] !== null
+                      ? `${slippage.amounts["100000"]}%`
+                      : "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

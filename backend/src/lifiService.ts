@@ -63,6 +63,13 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
     // Process each pair
     for (const { from, to } of tokenPairs) {
       try {
+        const headers: any = {};
+
+        // Add API key if available
+        if (process.env.LIFI_API_KEY) {
+          headers["x-lifi-api-key"] = process.env.LIFI_API_KEY;
+        }
+
         const response = await axios.get("https://li.quest/v1/connections", {
           params: {
             fromChain: ETHERLINK_CHAIN_ID,
@@ -70,6 +77,7 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
             fromToken: from.address,
             toToken: to.address,
           },
+          headers,
         });
 
         // Only add if connections array has items

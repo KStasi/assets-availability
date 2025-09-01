@@ -12,3 +12,13 @@ export interface PairRoutes {
   pair: Pair;
   routes: Route[];
 }
+
+export interface SlippageData {
+  pair: Pair;
+  amounts: {
+    "1000": number | null;
+    "10000": number | null;
+    "50000": number | null;
+    "100000": number | null;
+  };
+}

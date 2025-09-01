@@ -1,9 +1,17 @@
+import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import cron from "node-cron";
 import { runMigrations } from "./migrations";
 import { upsertTokens } from "./tokens";
 import { fetchAndCacheLiFiData, getCachedRoutes } from "./lifiService";
+import {
+  fetchAndCacheSlippageData,
+  getCachedSlippageData,
+} from "./slippageService";
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -18,13 +26,24 @@ app.use(express.json());
 runMigrations();
 upsertTokens();
 
-// Initial data fetch
-fetchAndCacheLiFiData();
+// Initial data fetch - routes first, then slippage
+(async () => {
+  console.log("Running initial routes fetch...");
+  await fetchAndCacheLiFiData();
+  console.log("Running initial slippage fetch...");
+  await fetchAndCacheSlippageData();
+})();
 
 // Schedule cron job to fetch LiFi data every 5 minutes
-cron.schedule("*/5 * * * *", () => {
+cron.schedule("*/5 * * * *", async () => {
   console.log("Running scheduled LiFi data fetch...");
-  fetchAndCacheLiFiData();
+  await fetchAndCacheLiFiData();
+});
+
+// Run slippage fetch only once per day to avoid rate limits
+cron.schedule("0 0 * * *", () => {
+  console.log("Running daily slippage data fetch...");
+  fetchAndCacheSlippageData();
 });
 
 // Health check endpoint
@@ -63,6 +82,22 @@ app.get("/routes", async (req, res) => {
   } catch (error) {
     console.error("Error in /routes endpoint:", error);
     res.status(500).json({ error: "Failed to fetch routes" });
+  }
+});
+
+// Get slippage data from cached database
+app.get("/slippage", async (req, res) => {
+  try {
+    const { slippageData, lastUpdated } = await getCachedSlippageData();
+
+    res.json({
+      slippageData,
+      lastUpdated,
+      count: slippageData.length,
+    });
+  } catch (error) {
+    console.error("Error in /slippage endpoint:", error);
+    res.status(500).json({ error: "Failed to fetch slippage data" });
   }
 });
 
