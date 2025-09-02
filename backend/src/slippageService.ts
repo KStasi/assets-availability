@@ -2,24 +2,73 @@ import axios from "axios";
 import { query } from "./db";
 import { SlippageData, QuoteResponse, PairRoutes } from "./types";
 
+// Interface for token price data
+interface TokenPrice {
+  token: string;
+  price: number;
+  timestamp: string;
+}
+
 const ETHERLINK_CHAIN_ID = 42793;
 
-// Test amounts in USD - reduced to stay within rate limits
-const TEST_AMOUNTS = [1000]; // Only 1 amount to minimize API calls
+// Test amounts in USD
+const TEST_AMOUNTS = [1000, 10000, 50000, 100000];
 
 // Track API usage
 let requestCount = 0;
-const MAX_REQUESTS_PER_HOUR = 10; // Very conservative limit to avoid rate limits
+const MAX_REQUESTS_PER_HOUR = 1000; // LiFi API allows 200 requests/minute, so 1000/hour is conservative
+
+// Function to get latest token prices from price table
+async function getLatestTokenPrices(): Promise<Map<string, number>> {
+  try {
+    // Get the latest price for each token by finding the maximum timestamp
+    const result = await query(`
+      SELECT DISTINCT ON (token) 
+        token, 
+        price, 
+        timestamp
+      FROM price 
+      ORDER BY token, timestamp DESC
+    `);
+
+    const priceMap = new Map<string, number>();
+    result.rows.forEach((row: any) => {
+      priceMap.set(row.token.toLowerCase(), parseFloat(row.price));
+    });
+
+    // Temporary workaround: use WBTC price for LBTC
+    const wbtcPrice = priceMap.get("wbtc");
+    if (wbtcPrice) {
+      priceMap.set("lbtc", wbtcPrice);
+      console.log(
+        `🔄 Temporary workaround: Using WBTC price ($${wbtcPrice}) for LBTC`
+      );
+    }
+
+    console.log(`Retrieved latest prices for ${priceMap.size} tokens`);
+    return priceMap;
+  } catch (error) {
+    console.error("Error fetching latest token prices:", error);
+    return new Map();
+  }
+}
 
 export async function fetchAndCacheSlippageData(): Promise<void> {
   console.log("Starting slippage data fetch...");
 
   try {
+    // Create a single timestamp for this entire calculation process
+    const calculationTimestamp = new Date().toISOString();
+    console.log(`📅 Using calculation timestamp: ${calculationTimestamp}`);
+
     // Get all tokens from database
     const tokensResult = await query(
       "SELECT symbol, address, decimals FROM tokens ORDER BY symbol"
     );
     const tokens = tokensResult.rows;
+
+    // Get latest token prices from price table
+    const tokenPrices = await getLatestTokenPrices();
 
     // First, get existing routes from the routes cache to know which pairs have routes
     const existingRoutesResult = await query(
@@ -125,11 +174,28 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
             await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay between amounts (reduced with API key)
           }
           try {
-            // Convert USD amount to token amount (assuming 1 USD = 1 token for simplicity)
-            // In reality, you'd need to get the token price from the API
-            const fromAmount = (
-              amountUSD * Math.pow(10, from.decimals)
+            // Get token price from price table
+            const tokenPrice = tokenPrices.get(from.symbol.toLowerCase());
+
+            if (!tokenPrice) {
+              console.log(
+                `⚠️  No price found for token ${from.symbol}, skipping...`
+              );
+              slippageAmounts[amountUSD.toString()] = null;
+              continue;
+            }
+
+            // Convert USD amount to token amount using actual token price
+            // amountUSD / tokenPrice = number of tokens needed
+            // Then multiply by 10^decimals to get the correct token amount
+            const tokenAmount = amountUSD / tokenPrice;
+            const fromAmount = Math.floor(
+              tokenAmount * Math.pow(10, from.decimals)
             ).toString();
+
+            console.log(
+              `💰 ${from.symbol}: $${amountUSD} / $${tokenPrice} = ${tokenAmount} tokens (${fromAmount} wei)`
+            );
 
             requestCount++;
             console.log(
@@ -153,7 +219,7 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
                 fromTokenAddress: from.address,
                 toChainId: ETHERLINK_CHAIN_ID,
                 toTokenAddress: to.address,
-                options: {},
+                options: { maxPriceImpact: 1 },
               },
               {
                 headers,
@@ -189,9 +255,22 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
                     `Retry request ${requestCount}/${MAX_REQUESTS_PER_HOUR} for ${from.symbol}→${to.symbol} at $${amountUSD}`
                   );
 
-                  // Recalculate fromAmount for retry
-                  const retryFromAmount = (
-                    amountUSD * Math.pow(10, from.decimals)
+                  // Recalculate fromAmount for retry using token price
+                  const retryTokenPrice = tokenPrices.get(
+                    from.symbol.toLowerCase()
+                  );
+
+                  if (!retryTokenPrice) {
+                    console.log(
+                      `⚠️  No price found for token ${from.symbol} during retry, skipping...`
+                    );
+                    slippageAmounts[amountUSD.toString()] = null;
+                    continue;
+                  }
+
+                  const retryTokenAmount = amountUSD / retryTokenPrice;
+                  const retryFromAmount = Math.floor(
+                    retryTokenAmount * Math.pow(10, from.decimals)
                   ).toString();
 
                   const retryHeaders: any = {
@@ -211,7 +290,7 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
                       fromTokenAddress: from.address,
                       toChainId: ETHERLINK_CHAIN_ID,
                       toTokenAddress: to.address,
-                      options: {},
+                      options: { maxPriceImpact: 1 },
                     },
                     {
                       headers: retryHeaders,
@@ -273,8 +352,8 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
         // Store slippage data in database
         await query(
           `INSERT INTO slippage_cache 
-           (pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000) 
-           VALUES ($1, $2, $3, $4, $5, $6)`,
+           (pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000, calculation_timestamp) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           [
             from.symbol,
             to.symbol,
@@ -282,6 +361,7 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
             slippageAmounts["10000"],
             slippageAmounts["50000"],
             slippageAmounts["100000"],
+            calculationTimestamp,
           ]
         );
 
@@ -357,11 +437,32 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
 export async function getCachedSlippageData(): Promise<{
   slippageData: SlippageData[];
   lastUpdated: string | null;
+  calculationTimestamp: string | null;
 }> {
   try {
-    // Get all cached slippage data
+    // Get the latest calculation timestamp
+    const latestTimestampResult = await query(
+      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL"
+    );
+    const latestTimestamp =
+      latestTimestampResult.rows[0]?.latest_timestamp || null;
+
+    if (!latestTimestamp) {
+      console.log("No slippage data with calculation timestamp found");
+      return {
+        slippageData: [],
+        lastUpdated: null,
+        calculationTimestamp: null,
+      };
+    }
+
+    // Get all cached slippage data for the latest calculation timestamp
     const rowsResult = await query(
-      "SELECT pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache ORDER BY pair_from, pair_to"
+      `SELECT pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000, calculation_timestamp 
+       FROM slippage_cache 
+       WHERE calculation_timestamp = $1 
+       ORDER BY pair_from, pair_to`,
+      [latestTimestamp]
     );
     const rows = rowsResult.rows;
 
@@ -375,16 +476,21 @@ export async function getCachedSlippageData(): Promise<{
       },
     }));
 
-    // Get the most recent update timestamp
+    // Get the most recent update timestamp for backward compatibility
     const lastUpdatedResult = await query(
-      "SELECT MAX(last_updated) as last_updated FROM slippage_cache"
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1",
+      [latestTimestamp]
     );
     const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
 
-    return { slippageData, lastUpdated };
+    console.log(
+      `📊 Retrieved ${slippageData.length} slippage records from calculation: ${latestTimestamp}`
+    );
+
+    return { slippageData, lastUpdated, calculationTimestamp: latestTimestamp };
   } catch (error) {
     console.error("Error getting cached slippage data:", error);
-    return { slippageData: [], lastUpdated: null };
+    return { slippageData: [], lastUpdated: null, calculationTimestamp: null };
   }
 }
 
@@ -409,27 +515,51 @@ export async function getSlippageCacheStatus(): Promise<{
   successfulPairs: number;
   failedPairs: number;
   lastUpdated: string | null;
+  latestCalculationTimestamp: string | null;
 }> {
   try {
-    // Count total pairs
+    // Get the latest calculation timestamp
+    const latestTimestampResult = await query(
+      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL"
+    );
+    const latestCalculationTimestamp =
+      latestTimestampResult.rows[0]?.latest_timestamp || null;
+
+    if (!latestCalculationTimestamp) {
+      return {
+        totalPairs: 0,
+        successfulPairs: 0,
+        failedPairs: 0,
+        lastUpdated: null,
+        latestCalculationTimestamp: null,
+      };
+    }
+
+    // Count total pairs for the latest calculation
     const totalResult = await query(
-      "SELECT COUNT(*) as count FROM slippage_cache"
+      "SELECT COUNT(*) as count FROM slippage_cache WHERE calculation_timestamp = $1",
+      [latestCalculationTimestamp]
     );
     const totalPairs = parseInt(totalResult.rows[0].count);
 
-    // Count successful pairs (those with at least one non-null amount)
-    const successfulResult = await query(`
+    // Count successful pairs (those with at least one non-null amount) for the latest calculation
+    const successfulResult = await query(
+      `
       SELECT COUNT(*) as count FROM slippage_cache 
-      WHERE amount_1000 IS NOT NULL 
+      WHERE calculation_timestamp = $1
+      AND (amount_1000 IS NOT NULL 
       OR amount_10000 IS NOT NULL 
       OR amount_50000 IS NOT NULL 
-      OR amount_100000 IS NOT NULL
-    `);
+      OR amount_100000 IS NOT NULL)
+    `,
+      [latestCalculationTimestamp]
+    );
     const successfulPairs = parseInt(successfulResult.rows[0].count);
 
-    // Get last updated timestamp
+    // Get last updated timestamp for the latest calculation
     const lastUpdatedResult = await query(
-      "SELECT MAX(last_updated) as last_updated FROM slippage_cache"
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1",
+      [latestCalculationTimestamp]
     );
     const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
 
@@ -438,6 +568,7 @@ export async function getSlippageCacheStatus(): Promise<{
       successfulPairs,
       failedPairs: totalPairs - successfulPairs,
       lastUpdated,
+      latestCalculationTimestamp,
     };
   } catch (error) {
     console.error("Error getting slippage cache status:", error);
@@ -446,6 +577,7 @@ export async function getSlippageCacheStatus(): Promise<{
       successfulPairs: 0,
       failedPairs: 0,
       lastUpdated: null,
+      latestCalculationTimestamp: null,
     };
   }
 }

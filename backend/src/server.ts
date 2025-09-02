@@ -118,11 +118,13 @@ app.get("/routes", async (req, res) => {
 // Get slippage data from cached database
 app.get("/slippage", async (req, res) => {
   try {
-    const { slippageData, lastUpdated } = await getCachedSlippageData();
+    const { slippageData, lastUpdated, calculationTimestamp } =
+      await getCachedSlippageData();
 
     res.json({
       slippageData,
       lastUpdated,
+      calculationTimestamp,
       count: slippageData.length,
     });
   } catch (error) {

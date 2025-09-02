@@ -45,6 +45,17 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_slippage_pair ON slippage_cache(pair_from, pair_to);
     `);
 
+    // Add calculation_timestamp column to slippage_cache if it doesn't exist
+    await queryWithRetry(`
+      ALTER TABLE slippage_cache 
+      ADD COLUMN IF NOT EXISTS calculation_timestamp TIMESTAMP WITH TIME ZONE;
+    `);
+
+    // Create index on calculation_timestamp for efficient latest data queries
+    await queryWithRetry(`
+      CREATE INDEX IF NOT EXISTS idx_slippage_calculation_timestamp ON slippage_cache(calculation_timestamp);
+    `);
+
     console.log("Migrations completed successfully");
   } catch (err) {
     console.error("Migration error:", err);

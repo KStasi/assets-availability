@@ -18,6 +18,7 @@ interface MatrixData {
   routeCount?: number;
   slippageData?: SlippageData[];
   slippageLastUpdated?: string;
+  slippageCalculationTimestamp?: string;
 }
 
 function App() {
@@ -91,6 +92,7 @@ function App() {
           routeCount: routesData.count,
           slippageData: slippageData.slippageData,
           slippageLastUpdated: slippageData.lastUpdated,
+          slippageCalculationTimestamp: slippageData.calculationTimestamp,
         };
         console.log("Final data structure:", finalData);
         setData(finalData);
@@ -192,6 +194,14 @@ function App() {
       {data.slippageData && data.slippageData.length > 0 && (
         <div style={{ marginTop: "40px" }}>
           <h2>Slippage</h2>
+          {data.slippageCalculationTimestamp && (
+            <p
+              style={{ fontSize: "14px", color: "#666", marginBottom: "20px" }}
+            >
+              Last calculated:{" "}
+              {new Date(data.slippageCalculationTimestamp).toLocaleString()}
+            </p>
+          )}
           <table className="matrix-table">
             <thead>
               <tr>
