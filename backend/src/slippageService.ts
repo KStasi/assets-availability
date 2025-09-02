@@ -1,5 +1,5 @@
 import axios from "axios";
-import { db } from "./db";
+import { query } from "./db";
 import { SlippageData, QuoteResponse, PairRoutes } from "./types";
 
 const ETHERLINK_CHAIN_ID = 42793;
@@ -15,75 +15,72 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
   console.log("Starting slippage data fetch...");
 
   try {
-    const database = db();
-
     // Get all tokens from database
-    const tokens = await new Promise<any[]>((resolve, reject) => {
-      database.all(
-        "SELECT symbol, address, decimals FROM tokens ORDER BY symbol",
-        (err: Error | null, rows: any[]) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(rows);
-          }
-        }
-      );
-    });
+    const tokensResult = await query(
+      "SELECT symbol, address, decimals FROM tokens ORDER BY symbol"
+    );
+    const tokens = tokensResult.rows;
 
     // First, get existing routes from the routes cache to know which pairs have routes
-    const existingRoutes = await new Promise<PairRoutes[]>(
-      (resolve, reject) => {
-        database.all(
-          "SELECT routes_data FROM routes_cache ORDER BY pair_from, pair_to",
-          (err: Error | null, rows: any[]) => {
-            if (err) {
-              reject(err);
-            } else {
-              const parsedRoutes = rows.map((row) =>
-                JSON.parse(row.routes_data)
-              );
-              resolve(parsedRoutes);
-            }
-          }
-        );
-      }
+    const existingRoutesResult = await query(
+      "SELECT routes_data FROM routes_cache ORDER BY pair_from, pair_to"
+    );
+    const existingRoutes = existingRoutesResult.rows.map((row: any) =>
+      JSON.parse(row.routes_data)
     );
 
     console.log(
       `Found ${existingRoutes.length} existing routes, checking for slippage...`
     );
 
-    // Only test the most important pairs to stay within rate limits
-    const priorityPairs = [
-      ["USDC", "WETH"],
-      ["USDC", "USDT"],
-      ["WETH", "WBTC"],
-    ];
-
+    // Use all available connections from routes cache instead of hardcoded pairs
     const tokenPairs: { from: any; to: any }[] = [];
 
-    for (const [fromSymbol, toSymbol] of priorityPairs) {
-      const from = tokens.find((t) => t.symbol === fromSymbol);
-      const to = tokens.find((t) => t.symbol === toSymbol);
+    // Extract unique pairs from existing routes
+    const uniquePairs = new Set<string>();
 
-      if (from && to) {
-        tokenPairs.push({ from, to });
+    existingRoutes.forEach((route: PairRoutes) => {
+      if (route.pair && route.pair.from && route.pair.to) {
+        const pairKey = `${route.pair.from}→${route.pair.to}`;
+        const reversePairKey = `${route.pair.to}→${route.pair.from}`;
+
+        // Only add if we haven't seen this pair or its reverse
+        if (!uniquePairs.has(pairKey) && !uniquePairs.has(reversePairKey)) {
+          uniquePairs.add(pairKey);
+
+          const from = tokens.find((t: any) => t.symbol === route.pair.from);
+          const to = tokens.find((t: any) => t.symbol === route.pair.to);
+
+          if (from && to) {
+            tokenPairs.push({ from, to });
+          }
+        }
+      }
+    });
+
+    // If no routes found, fall back to some basic pairs
+    if (tokenPairs.length === 0) {
+      console.log("No routes found in cache, using fallback pairs...");
+      const fallbackPairs = [
+        ["USDC", "WETH"],
+        ["USDC", "USDT"],
+        ["WETH", "WBTC"],
+      ];
+
+      for (const [fromSymbol, toSymbol] of fallbackPairs) {
+        const from = tokens.find((t: any) => t.symbol === fromSymbol);
+        const to = tokens.find((t: any) => t.symbol === toSymbol);
+
+        if (from && to) {
+          tokenPairs.push({ from, to });
+        }
       }
     }
 
     console.log(`Processing ${tokenPairs.length} token pairs for slippage...`);
 
     // Clear existing slippage cache
-    await new Promise<void>((resolve, reject) => {
-      database.run("DELETE FROM slippage_cache", (err: Error | null) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+    await query("DELETE FROM slippage_cache");
 
     let successCount = 0;
     let errorCount = 0;
@@ -241,6 +238,8 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
                       ? retryError.message
                       : "Unknown error"
                   );
+                  // Mark this amount as failed
+                  slippageAmounts[amountUSD.toString()] = null;
                 }
               } else {
                 console.log(
@@ -248,42 +247,72 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
                 );
               }
             } else {
-              console.error(
-                `Error fetching quote for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
-                amountError instanceof Error
-                  ? amountError.message
-                  : "Unknown error"
-              );
+              // Check if it's a 400 error (bad request) which might indicate unsupported pair
+              if (
+                amountError instanceof Error &&
+                amountError.message.includes("400")
+              ) {
+                console.log(
+                  `⚠️  ${from.symbol}→${to.symbol} at $${amountUSD}: Bad request (400) - this pair might not be supported or have insufficient liquidity`
+                );
+              } else {
+                console.error(
+                  `Error fetching quote for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
+                  amountError instanceof Error
+                    ? amountError.message
+                    : "Unknown error"
+                );
+              }
+              // Mark this amount as failed
+              slippageAmounts[amountUSD.toString()] = null;
             }
             // Keep slippage as null for this amount if all attempts fail
           }
         }
 
         // Store slippage data in database
-        await new Promise<void>((resolve, reject) => {
-          database.run(
-            `INSERT INTO slippage_cache 
-             (pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000) 
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              from.symbol,
-              to.symbol,
-              slippageAmounts["1000"],
-              slippageAmounts["10000"],
-              slippageAmounts["50000"],
-              slippageAmounts["100000"],
-            ],
-            (err: Error | null) => {
-              if (err) {
-                reject(err);
-              } else {
-                resolve();
-              }
-            }
-          );
-        });
+        await query(
+          `INSERT INTO slippage_cache 
+           (pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000) 
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            from.symbol,
+            to.symbol,
+            slippageAmounts["1000"],
+            slippageAmounts["10000"],
+            slippageAmounts["50000"],
+            slippageAmounts["100000"],
+          ]
+        );
 
-        successCount++;
+        // Check if this pair has any successful amounts
+        const hasSuccessfulAmounts = Object.values(slippageAmounts).some(
+          (amount) => amount !== null
+        );
+
+        // Log detailed results for this pair
+        const successfulAmounts = Object.entries(slippageAmounts)
+          .filter(([_, amount]) => amount !== null)
+          .map(([amount, value]) => `$${amount}: ${value}%`)
+          .join(", ");
+
+        const failedAmounts = Object.entries(slippageAmounts)
+          .filter(([_, amount]) => amount === null)
+          .map(([amount, _]) => `$${amount}`)
+          .join(", ");
+
+        if (hasSuccessfulAmounts) {
+          console.log(
+            `✓ ${from.symbol}→${to.symbol}: Successful amounts: ${successfulAmounts}`
+          );
+          if (failedAmounts) {
+            console.log(`  Failed amounts: ${failedAmounts}`);
+          }
+          successCount++;
+        } else {
+          console.log(`✗ ${from.symbol}→${to.symbol}: All amounts failed`);
+          errorCount++;
+        }
       } catch (error) {
         console.error(
           `Error processing slippage for ${from.symbol}→${to.symbol}:`,
@@ -293,8 +322,32 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
       }
     }
 
+    // Get final summary of all amounts
+    const allAmountsResult = await query(
+      "SELECT amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache"
+    );
+    const allAmounts = allAmountsResult.rows;
+
+    let totalAmounts = 0;
+    let successfulAmounts = 0;
+    let failedAmounts = 0;
+
+    allAmounts.forEach((row: any) => {
+      Object.values(row).forEach((amount) => {
+        totalAmounts++;
+        if (amount !== null) {
+          successfulAmounts++;
+        } else {
+          failedAmounts++;
+        }
+      });
+    });
+
     console.log(
-      `Slippage data fetch completed. Success: ${successCount}, Errors: ${errorCount}`
+      `Slippage data fetch completed. Pairs: Success: ${successCount}, Errors: ${errorCount}`
+    );
+    console.log(
+      `Amounts: Total: ${totalAmounts}, Successful: ${successfulAmounts}, Failed: ${failedAmounts}`
     );
   } catch (error) {
     console.error("Error in fetchAndCacheSlippageData:", error);
@@ -305,24 +358,14 @@ export async function getCachedSlippageData(): Promise<{
   slippageData: SlippageData[];
   lastUpdated: string | null;
 }> {
-  const database = db();
-
   try {
     // Get all cached slippage data
-    const rows = await new Promise<any[]>((resolve, reject) => {
-      database.all(
-        "SELECT pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache ORDER BY pair_from, pair_to",
-        (err: Error | null, rows: any[]) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(rows);
-          }
-        }
-      );
-    });
+    const rowsResult = await query(
+      "SELECT pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache ORDER BY pair_from, pair_to"
+    );
+    const rows = rowsResult.rows;
 
-    const slippageData: SlippageData[] = rows.map((row) => ({
+    const slippageData: SlippageData[] = rows.map((row: any) => ({
       pair: { from: row.pair_from, to: row.pair_to },
       amounts: {
         "1000": row.amount_1000,
@@ -333,22 +376,76 @@ export async function getCachedSlippageData(): Promise<{
     }));
 
     // Get the most recent update timestamp
-    const lastUpdated = await new Promise<string | null>((resolve, reject) => {
-      database.get(
-        "SELECT MAX(last_updated) as last_updated FROM slippage_cache",
-        (err: Error | null, row: any) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row?.last_updated || null);
-          }
-        }
-      );
-    });
+    const lastUpdatedResult = await query(
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache"
+    );
+    const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
 
     return { slippageData, lastUpdated };
   } catch (error) {
     console.error("Error getting cached slippage data:", error);
     return { slippageData: [], lastUpdated: null };
+  }
+}
+
+// Function to manually trigger slippage calculation
+export async function manualSlippageCalculation(): Promise<void> {
+  console.log("Manual slippage calculation triggered...");
+
+  // Reset request count for manual runs
+  requestCount = 0;
+
+  try {
+    await fetchAndCacheSlippageData();
+    console.log("Manual slippage calculation completed successfully");
+  } catch (error) {
+    console.error("Manual slippage calculation failed:", error);
+  }
+}
+
+// Function to get current slippage cache status
+export async function getSlippageCacheStatus(): Promise<{
+  totalPairs: number;
+  successfulPairs: number;
+  failedPairs: number;
+  lastUpdated: string | null;
+}> {
+  try {
+    // Count total pairs
+    const totalResult = await query(
+      "SELECT COUNT(*) as count FROM slippage_cache"
+    );
+    const totalPairs = parseInt(totalResult.rows[0].count);
+
+    // Count successful pairs (those with at least one non-null amount)
+    const successfulResult = await query(`
+      SELECT COUNT(*) as count FROM slippage_cache 
+      WHERE amount_1000 IS NOT NULL 
+      OR amount_10000 IS NOT NULL 
+      OR amount_50000 IS NOT NULL 
+      OR amount_100000 IS NOT NULL
+    `);
+    const successfulPairs = parseInt(successfulResult.rows[0].count);
+
+    // Get last updated timestamp
+    const lastUpdatedResult = await query(
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache"
+    );
+    const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
+
+    return {
+      totalPairs,
+      successfulPairs,
+      failedPairs: totalPairs - successfulPairs,
+      lastUpdated,
+    };
+  } catch (error) {
+    console.error("Error getting slippage cache status:", error);
+    return {
+      totalPairs: 0,
+      successfulPairs: 0,
+      failedPairs: 0,
+      lastUpdated: null,
+    };
   }
 }

@@ -1,5 +1,5 @@
 import axios from "axios";
-import { db } from "./db";
+import { query } from "./db";
 import { PairRoutes } from "./types";
 
 const ETHERLINK_CHAIN_ID = 42793;
@@ -8,21 +8,11 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
   console.log("Starting LiFi data fetch...");
 
   try {
-    const database = db();
-
     // Get all tokens from database
-    const tokens = await new Promise<any[]>((resolve, reject) => {
-      database.all(
-        "SELECT symbol, address, decimals FROM tokens ORDER BY symbol",
-        (err: Error | null, rows: any[]) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(rows);
-          }
-        }
-      );
-    });
+    const tokensResult = await query(
+      "SELECT symbol, address, decimals FROM tokens ORDER BY symbol"
+    );
+    const tokens = tokensResult.rows;
 
     // Generate unique pairs (avoid duplicates like USDC→WETH and WETH→USDC)
     const pairs = new Set<string>();
@@ -32,7 +22,7 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
       for (let j = 0; j < tokens.length; j++) {
         // Skip self-pairs (token to itself)
         if (i === j) continue;
-        
+
         const from = tokens[i];
         const to = tokens[j];
 
@@ -51,15 +41,7 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
     console.log(`Processing ${tokenPairs.length} token pairs...`);
 
     // Clear existing cache
-    await new Promise<void>((resolve, reject) => {
-      database.run("DELETE FROM routes_cache", (err: Error | null) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+    await query("DELETE FROM routes_cache");
 
     const results: PairRoutes[] = [];
     let successCount = 0;
@@ -95,19 +77,10 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
           results.push(pairRoute);
 
           // Store in database
-          await new Promise<void>((resolve, reject) => {
-            database.run(
-              "INSERT INTO routes_cache (pair_from, pair_to, routes_data) VALUES (?, ?, ?)",
-              [from.symbol, to.symbol, JSON.stringify(pairRoute)],
-              (err: Error | null) => {
-                if (err) {
-                  reject(err);
-                } else {
-                  resolve();
-                }
-              }
-            );
-          });
+          await query(
+            "INSERT INTO routes_cache (pair_from, pair_to, routes_data) VALUES ($1, $2, $3)",
+            [from.symbol, to.symbol, JSON.stringify(pairRoute)]
+          );
 
           successCount++;
         }
@@ -133,37 +106,20 @@ export async function getCachedRoutes(): Promise<{
   routes: PairRoutes[];
   lastUpdated: string | null;
 }> {
-  const database = db();
-
   try {
     // Get all cached routes
-    const routes = await new Promise<PairRoutes[]>((resolve, reject) => {
-      database.all(
-        "SELECT routes_data FROM routes_cache ORDER BY pair_from, pair_to",
-        (err: Error | null, rows: any[]) => {
-          if (err) {
-            reject(err);
-          } else {
-            const parsedRoutes = rows.map((row) => JSON.parse(row.routes_data));
-            resolve(parsedRoutes);
-          }
-        }
-      );
-    });
+    const routesResult = await query(
+      "SELECT routes_data FROM routes_cache ORDER BY pair_from, pair_to"
+    );
+    const routes = routesResult.rows.map((row: any) =>
+      JSON.parse(row.routes_data)
+    );
 
     // Get the most recent update timestamp
-    const lastUpdated = await new Promise<string | null>((resolve, reject) => {
-      database.get(
-        "SELECT MAX(last_updated) as last_updated FROM routes_cache",
-        (err: Error | null, row: any) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row?.last_updated || null);
-          }
-        }
-      );
-    });
+    const lastUpdatedResult = await query(
+      "SELECT MAX(last_updated) as last_updated FROM routes_cache"
+    );
+    const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
 
     return { routes, lastUpdated };
   } catch (error) {

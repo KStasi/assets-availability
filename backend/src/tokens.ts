@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { query } from "./db";
 
 export const TOKENS = {
   USDC: { address: "0x796Ea11Fa2dD751eD01b53C372fFDB4AAa8f00F9", decimals: 6 },
@@ -26,29 +26,23 @@ export const TOKENS = {
   mRE7: { address: "0x733d504435a49FC8C4e9759e756C2846c92f0160", decimals: 18 },
 } as const;
 
-export function upsertTokens(): void {
-  const database = db();
-
-  const upsertStmt = database.prepare(`
-    INSERT OR REPLACE INTO tokens (symbol, address, decimals)
-    VALUES (?, ?, ?)
-  `);
-
-  let completed = 0;
-  const total = Object.keys(TOKENS).length;
-
-  for (const [symbol, tokenData] of Object.entries(TOKENS)) {
-    upsertStmt.run(
-      [symbol, tokenData.address, tokenData.decimals],
-      (err: Error | null) => {
-        if (err) {
-          console.error(`Error upserting token ${symbol}:`, err);
-        }
-        completed++;
-        if (completed === total) {
-          console.log("Tokens upserted successfully");
-        }
-      }
-    );
+export async function upsertTokens(): Promise<void> {
+  try {
+    for (const [symbol, tokenData] of Object.entries(TOKENS)) {
+      await query(
+        `
+        INSERT INTO tokens (symbol, address, decimals)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (symbol) DO UPDATE SET
+          address = EXCLUDED.address,
+          decimals = EXCLUDED.decimals
+      `,
+        [symbol, tokenData.address, tokenData.decimals]
+      );
+    }
+    console.log("Tokens upserted successfully");
+  } catch (err) {
+    console.error("Error upserting tokens:", err);
+    throw err;
   }
 }
