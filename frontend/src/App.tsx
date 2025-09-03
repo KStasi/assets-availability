@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { PairRoutes, SlippageData } from "@assets-availability/types";
 import "./App.css";
 
@@ -249,7 +249,7 @@ function App() {
       {/* Slippage Table */}
       {data.slippageData && data.slippageData.length > 0 && (
         <div style={{ marginTop: "40px" }}>
-          <h2>Slippage</h2>
+          <h2>Slippage Comparison</h2>
           {data.slippageCalculationTimestamp && (
             <p
               style={{ fontSize: "14px", color: "#666", marginBottom: "20px" }}
@@ -259,44 +259,145 @@ function App() {
             </p>
           )}
           <div className="table-wrapper">
-            <table className="matrix-table">
+            <table className="slippage-comparison-table">
               <thead>
                 <tr>
-                  <th>Pool</th>
-                  <th>$1,000</th>
-                  <th>$10,000</th>
-                  <th>$50,000</th>
-                  <th>$100,000</th>
+                  <th rowSpan={2}>Pool</th>
+                  <th colSpan={4} style={{ textAlign: "center" }}>
+                    $1,000
+                  </th>
+                  <th colSpan={4} style={{ textAlign: "center" }}>
+                    $10,000
+                  </th>
+                  <th colSpan={4} style={{ textAlign: "center" }}>
+                    $50,000
+                  </th>
+                  <th colSpan={4} style={{ textAlign: "center" }}>
+                    $100,000
+                  </th>
+                </tr>
+                <tr>
+                  <th>LiFi</th>
+                  <th>OKU</th>
+                  <th>Best</th>
+                  <th>Diff</th>
+                  <th>LiFi</th>
+                  <th>OKU</th>
+                  <th>Best</th>
+                  <th>Diff</th>
+                  <th>LiFi</th>
+                  <th>OKU</th>
+                  <th>Best</th>
+                  <th>Diff</th>
+                  <th>LiFi</th>
+                  <th>OKU</th>
+                  <th>Best</th>
+                  <th>Diff</th>
                 </tr>
               </thead>
               <tbody>
-                {data.slippageData.map((slippage) => (
-                  <tr key={`${slippage.pair.from}-${slippage.pair.to}`}>
-                    <td>
-                      {slippage.pair.from}→{slippage.pair.to}
-                    </td>
-                    <td>
-                      {slippage.amounts["1000"] !== null
-                        ? `${slippage.amounts["1000"]}%`
-                        : "-"}
-                    </td>
-                    <td>
-                      {slippage.amounts["10000"] !== null
-                        ? `${slippage.amounts["10000"]}%`
-                        : "-"}
-                    </td>
-                    <td>
-                      {slippage.amounts["50000"] !== null
-                        ? `${slippage.amounts["50000"]}%`
-                        : "-"}
-                    </td>
-                    <td>
-                      {slippage.amounts["100000"] !== null
-                        ? `${slippage.amounts["100000"]}%`
-                        : "-"}
-                    </td>
-                  </tr>
-                ))}
+                {(() => {
+                  // Group slippage data by pair
+                  const groupedData: {
+                    [key: string]: { LiFi?: SlippageData; OKU?: SlippageData };
+                  } = {};
+
+                  data.slippageData.forEach((slippage) => {
+                    const pairKey = `${slippage.pair.from}-${slippage.pair.to}`;
+                    if (!groupedData[pairKey]) {
+                      groupedData[pairKey] = {};
+                    }
+                    groupedData[pairKey][
+                      slippage.provider as keyof (typeof groupedData)[string]
+                    ] = slippage;
+                  });
+
+                  return Object.entries(groupedData).map(
+                    ([pairKey, providers]) => {
+                      const lifiData = providers.LiFi;
+                      const okuData = providers.OKU;
+
+                      const formatSlippage = (amount: number | null) =>
+                        amount !== null ? `${amount.toFixed(4)}%` : "-";
+
+                      const getBestProvider = (
+                        lifiAmount: number | null,
+                        okuAmount: number | null
+                      ) => {
+                        if (lifiAmount === null && okuAmount === null)
+                          return null;
+                        if (lifiAmount === null) return "OKU";
+                        if (okuAmount === null) return "LiFi";
+                        return lifiAmount < okuAmount ? "LiFi" : "OKU";
+                      };
+
+                      const getDifference = (
+                        lifiAmount: number | null,
+                        okuAmount: number | null
+                      ) => {
+                        if (lifiAmount === null || okuAmount === null)
+                          return null;
+                        return Math.abs(lifiAmount - okuAmount);
+                      };
+
+                      const volumes = [
+                        "1000",
+                        "10000",
+                        "50000",
+                        "100000",
+                      ] as const;
+
+                      return (
+                        <tr key={pairKey}>
+                          <td style={{ fontWeight: "600" }}>
+                            {lifiData?.pair.from || okuData?.pair.from}→
+                            {lifiData?.pair.to || okuData?.pair.to}
+                          </td>
+                          {volumes.map((volume) => {
+                            const lifiAmount =
+                              lifiData?.amounts[volume] || null;
+                            const okuAmount = okuData?.amounts[volume] || null;
+                            const bestProvider = getBestProvider(
+                              lifiAmount,
+                              okuAmount
+                            );
+                            const difference = getDifference(
+                              lifiAmount,
+                              okuAmount
+                            );
+
+                            return (
+                              <React.Fragment key={volume}>
+                                <td
+                                  className={`slippage-cell ${
+                                    bestProvider === "LiFi" ? "best" : ""
+                                  }`}
+                                >
+                                  {formatSlippage(lifiAmount)}
+                                </td>
+                                <td
+                                  className={`slippage-cell ${
+                                    bestProvider === "OKU" ? "best" : ""
+                                  }`}
+                                >
+                                  {formatSlippage(okuAmount)}
+                                </td>
+                                <td className="best-provider">
+                                  {bestProvider || "-"}
+                                </td>
+                                <td className="difference">
+                                  {difference !== null
+                                    ? `${difference.toFixed(4)}%`
+                                    : "-"}
+                                </td>
+                              </React.Fragment>
+                            );
+                          })}
+                        </tr>
+                      );
+                    }
+                  );
+                })()}
               </tbody>
             </table>
           </div>

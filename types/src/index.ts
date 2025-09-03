@@ -15,6 +15,7 @@ export interface PairRoutes {
 
 export interface SlippageData {
   pair: Pair;
+  provider: string;
   amounts: {
     "1000": number | null;
     "10000": number | null;

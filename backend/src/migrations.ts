@@ -68,9 +68,20 @@ export async function runMigrations(): Promise<void> {
       ADD COLUMN IF NOT EXISTS calculation_timestamp TIMESTAMP WITH TIME ZONE;
     `);
 
+    // Add provider column to slippage_cache if it doesn't exist
+    await queryWithRetry(`
+      ALTER TABLE slippage_cache 
+      ADD COLUMN IF NOT EXISTS provider VARCHAR(50) DEFAULT 'LiFi';
+    `);
+
     // Create index on calculation_timestamp for efficient latest data queries
     await queryWithRetry(`
       CREATE INDEX IF NOT EXISTS idx_slippage_calculation_timestamp ON slippage_cache(calculation_timestamp);
+    `);
+
+    // Create index on provider for efficient provider-specific queries
+    await queryWithRetry(`
+      CREATE INDEX IF NOT EXISTS idx_slippage_provider ON slippage_cache(provider);
     `);
 
     console.log("Migrations completed successfully");

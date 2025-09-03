@@ -41,6 +41,7 @@ export type QuoteResponse = {
 
 export type SlippageData = {
   pair: Pair;
+  provider: string;
   amounts: {
     "1000": number | null;
     "10000": number | null;

@@ -1,1 +1,94 @@
-/* Additional component-specific styles can go here */
+/* Slippage Comparison Table Styles */
+.slippage-comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: white;
+}
+
+.slippage-comparison-table th {
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  padding: 8px 6px;
+  text-align: center;
+  font-weight: 600;
+  color: #495057;
+}
+
+.slippage-comparison-table th:first-child {
+  background-color: #e9ecef;
+  font-weight: 700;
+  text-align: left;
+  padding-left: 12px;
+}
+
+.slippage-comparison-table td {
+  border: 1px solid #dee2e6;
+  padding: 6px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.slippage-comparison-table td:first-child {
+  background-color: #f8f9fa;
+  text-align: left;
+  padding-left: 12px;
+  font-weight: 600;
+  position: sticky;
+  left: 0;
+  z-index: 10;
+}
+
+.slippage-cell {
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+  font-size: 11px;
+  min-width: 60px;
+}
+
+.slippage-cell.best {
+  background-color: #d4edda;
+  color: #155724;
+  font-weight: 600;
+}
+
+.best-provider {
+  font-weight: 600;
+  font-size: 10px;
+  color: #28a745;
+  min-width: 40px;
+}
+
+.difference {
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+  font-size: 10px;
+  color: #6c757d;
+  min-width: 50px;
+}
+
+/* Volume group headers */
+.slippage-comparison-table th[colspan] {
+  background-color: #e9ecef;
+  font-weight: 700;
+  color: #495057;
+  border-bottom: 2px solid #dee2e6;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  .slippage-comparison-table {
+    font-size: 10px;
+  }
+
+  .slippage-comparison-table th,
+  .slippage-comparison-table td {
+    padding: 4px 3px;
+  }
+
+  .slippage-cell {
+    min-width: 50px;
+  }
+
+  .difference {
+    min-width: 40px;
+  }
+}

@@ -12,6 +12,12 @@ import {
   manualSlippageCalculation,
   getSlippageCacheStatus,
 } from "./slippageService";
+import {
+  fetchAndCacheOkuSlippageData,
+  getCachedOkuSlippageData,
+  manualOkuSlippageCalculation,
+  getOkuSlippageCacheStatus,
+} from "./okuSlippageService";
 
 // Load environment variables
 dotenv.config();
@@ -56,6 +62,7 @@ app.use(express.json());
   if (FETCH_SLIPPAGE_ON_STARTUP) {
     console.log("Running initial slippage fetch...");
     await fetchAndCacheSlippageData();
+    await fetchAndCacheOkuSlippageData();
   } else {
     console.log(
       "Skipping initial slippage fetch (FETCH_SLIPPAGE_ON_STARTUP=false)"
@@ -74,11 +81,12 @@ cron.schedule("0 0 * * *", async () => {
 cron.schedule("0 0 * * *", () => {
   console.log("Running daily slippage data fetch...");
   fetchAndCacheSlippageData();
+  fetchAndCacheOkuSlippageData();
 });
 
 console.log("Daily cron jobs scheduled:");
 console.log("- Routes fetch (LiFi + Oku): Daily at 00:00 UTC");
-console.log("- Slippage fetch: Daily at 00:00 UTC");
+console.log("- Slippage fetch (LiFi + Oku): Daily at 00:00 UTC");
 console.log(
   `Startup behavior: Routes=${process.env.FETCH_ROUTES_ON_STARTUP}, Slippage=${process.env.FETCH_SLIPPAGE_ON_STARTUP}`
 );
@@ -136,17 +144,56 @@ app.get("/routes", async (req, res) => {
   }
 });
 
-// Get slippage data from cached database
+// Get slippage data from cached database (both LiFi and OKU)
 app.get("/slippage", async (req, res) => {
   try {
-    const { slippageData, lastUpdated, calculationTimestamp } =
-      await getCachedSlippageData();
+    const {
+      slippageData: lifiSlippageData,
+      lastUpdated: lifiLastUpdated,
+      calculationTimestamp: lifiCalculationTimestamp,
+    } = await getCachedSlippageData();
+    const {
+      slippageData: okuSlippageData,
+      lastUpdated: okuLastUpdated,
+      calculationTimestamp: okuCalculationTimestamp,
+    } = await getCachedOkuSlippageData();
+
+    // Combine slippage data from both providers
+    const allSlippageData = [...lifiSlippageData, ...okuSlippageData];
+
+    // Get the most recent update timestamp
+    const lastUpdated =
+      lifiLastUpdated && okuLastUpdated
+        ? new Date(lifiLastUpdated) > new Date(okuLastUpdated)
+          ? lifiLastUpdated
+          : okuLastUpdated
+        : lifiLastUpdated || okuLastUpdated;
+
+    // Get the most recent calculation timestamp
+    const calculationTimestamp =
+      lifiCalculationTimestamp && okuCalculationTimestamp
+        ? new Date(lifiCalculationTimestamp) > new Date(okuCalculationTimestamp)
+          ? lifiCalculationTimestamp
+          : okuCalculationTimestamp
+        : lifiCalculationTimestamp || okuCalculationTimestamp;
 
     res.json({
-      slippageData,
+      slippageData: allSlippageData,
       lastUpdated,
       calculationTimestamp,
-      count: slippageData.length,
+      count: allSlippageData.length,
+      providers: {
+        lifi: {
+          count: lifiSlippageData.length,
+          lastUpdated: lifiLastUpdated,
+          calculationTimestamp: lifiCalculationTimestamp,
+        },
+        oku: {
+          count: okuSlippageData.length,
+          lastUpdated: okuLastUpdated,
+          calculationTimestamp: okuCalculationTimestamp,
+        },
+      },
     });
   } catch (error) {
     console.error("Error in /slippage endpoint:", error);
@@ -154,12 +201,13 @@ app.get("/slippage", async (req, res) => {
   }
 });
 
-// Manual trigger for slippage calculation
+// Manual trigger for slippage calculation (both LiFi and OKU)
 app.post("/slippage/calculate", async (req, res) => {
   try {
     console.log("Manual slippage calculation triggered via API");
     await manualSlippageCalculation();
-    res.json({ message: "Slippage calculation completed" });
+    await manualOkuSlippageCalculation();
+    res.json({ message: "Slippage calculation completed for all providers" });
   } catch (error) {
     console.error("Error in manual slippage calculation:", error);
     res.status(500).json({ error: "Failed to trigger slippage calculation" });
@@ -199,6 +247,50 @@ app.get("/slippage/status", async (req, res) => {
   } catch (error) {
     console.error("Error getting slippage status:", error);
     res.status(500).json({ error: "Failed to get slippage status" });
+  }
+});
+
+// Get OKU slippage data from cached database
+app.get("/slippage/oku", async (req, res) => {
+  try {
+    const { slippageData, lastUpdated, calculationTimestamp } =
+      await getCachedOkuSlippageData();
+
+    res.json({
+      slippageData,
+      lastUpdated,
+      calculationTimestamp,
+      count: slippageData.length,
+      provider: "Oku",
+    });
+  } catch (error) {
+    console.error("Error in /slippage/oku endpoint:", error);
+    res.status(500).json({ error: "Failed to fetch OKU slippage data" });
+  }
+});
+
+// Manual trigger for OKU slippage calculation
+app.post("/slippage/oku/calculate", async (req, res) => {
+  try {
+    console.log("Manual OKU slippage calculation triggered via API");
+    await manualOkuSlippageCalculation();
+    res.json({ message: "OKU slippage calculation completed" });
+  } catch (error) {
+    console.error("Error in manual OKU slippage calculation:", error);
+    res
+      .status(500)
+      .json({ error: "Failed to trigger OKU slippage calculation" });
+  }
+});
+
+// Get OKU slippage cache status
+app.get("/slippage/oku/status", async (req, res) => {
+  try {
+    const status = await getOkuSlippageCacheStatus();
+    res.json(status);
+  } catch (error) {
+    console.error("Error getting OKU slippage status:", error);
+    res.status(500).json({ error: "Failed to get OKU slippage status" });
   }
 });
 

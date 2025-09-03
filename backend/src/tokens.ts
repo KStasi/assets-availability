@@ -21,6 +21,10 @@ export const TOKENS = {
   LBTC: { address: "0xecAc9C5F704e954931349Da37F60E39f515c11c1", decimals: 8 },
   stXTZ: { address: "0x01F07f4d78d47A64F4C3B2b65f513f15Be6E1854", decimals: 6 },
   mMEV: { address: "0x5542F82389b76C23f5848268893234d8A63fd5c8", decimals: 18 },
+  USTBL: { address: "0xe4880249745eAc5F1eD9d8F7DF844792D560e750", decimals: 5 },
+  EUTBL: { address: "0xa0769f7A8fC65e47dE93797b4e21C073c117Fc80", decimals: 5 },
+  mRE7: { address: "0x733d504435a49FC8C4e9759e756C2846c92f0160", decimals: 18 },
+  XTZ: { address: "0x0000000000000000000000000000000000000000", decimals: 8 },
 } as const;
 
 export async function upsertTokens(): Promise<void> {

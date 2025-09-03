@@ -4,6 +4,15 @@ import { PairRoutes } from "./types";
 
 const ETHERLINK_CHAIN_ID = 42793;
 
+// Helper function to get correct decimals for Li.Fi API calls
+// XTZ should use 18 decimals for Li.Fi, others use their database decimals
+function getLiFiDecimals(symbol: string, dbDecimals: number): number {
+  if (symbol === "XTZ") {
+    return 18;
+  }
+  return dbDecimals;
+}
+
 export async function fetchAndCacheLiFiData(): Promise<void> {
   console.log("Starting LiFi data fetch...");
 

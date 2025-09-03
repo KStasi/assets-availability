@@ -1,6 +1,6 @@
 import axios from "axios";
 import { query } from "./db";
-import { SlippageData, QuoteResponse, PairRoutes } from "./types";
+import { SlippageData, PairRoutes } from "./types";
 
 // Interface for token price data
 interface TokenPrice {
@@ -9,23 +9,79 @@ interface TokenPrice {
   timestamp: string;
 }
 
-const ETHERLINK_CHAIN_ID = 42793;
-
-// Helper function to get correct decimals for Li.Fi API calls
-// XTZ should use 18 decimals for Li.Fi, others use their database decimals
-function getLiFiDecimals(symbol: string, dbDecimals: number): number {
-  if (symbol === "XTZ") {
-    return 18;
-  }
-  return dbDecimals;
-}
+const ETHERLINK_CHAIN_ID = "42793";
+const OKU_BASE_URL =
+  "https://accounts.v2.icarus.tools/connect/gfxcafe.oku.account.v1.SimpleSwapService";
 
 // Test amounts in USD
 const TEST_AMOUNTS = [1000, 10000, 50000, 100000];
 
 // Track API usage
 let requestCount = 0;
-const MAX_REQUESTS_PER_HOUR = 1000; // LiFi API allows 200 requests/minute, so 1000/hour is conservative
+const MAX_REQUESTS_PER_HOUR = 500; // Conservative limit for OKU API
+
+// Oku API types
+interface OkuCreateRequest {
+  chain: string;
+  isExactIn: boolean;
+  tokenAmount: string;
+  slippage: number;
+}
+
+interface OkuCreateResponse {
+  orderId: string;
+}
+
+interface OkuUpdateQuoteParamsRequest {
+  orderId: string;
+  chain: string;
+  enabledMarkets: string[];
+  isExactIn: boolean;
+  inTokenAddress: string;
+  outTokenAddress: string;
+  tokenAmount: string;
+  gasPrice: string;
+  slippage: number;
+}
+
+interface OkuUpdateQuoteParamsResponse {
+  generation: string;
+  orderId: string;
+}
+
+interface OkuGetQuotesRequest {
+  orderId: string;
+  fetchedRouters: string[];
+  waitTime: string;
+}
+
+interface OkuQuote {
+  inAmount: string;
+  outAmount: string;
+  simulationError?: any;
+  candidateTrade: {
+    chainId: string;
+    value: string;
+    to: string;
+    data: string;
+  };
+}
+
+interface OkuRouterQuote {
+  router: string;
+  fetched: boolean;
+  quoteId: string;
+  quote?: OkuQuote;
+  error?: {
+    message: string;
+  };
+}
+
+interface OkuGetQuotesResponse {
+  quotes: {
+    [router: string]: OkuRouterQuote;
+  };
+}
 
 // Function to get latest token prices from price table
 async function getLatestTokenPrices(): Promise<Map<string, number>> {
@@ -62,8 +118,8 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
   }
 }
 
-export async function fetchAndCacheSlippageData(): Promise<void> {
-  console.log("Starting slippage data fetch...");
+export async function fetchAndCacheOkuSlippageData(): Promise<void> {
+  console.log("Starting OKU slippage data fetch...");
 
   try {
     // Create a single timestamp for this entire calculation process
@@ -79,22 +135,22 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
     // Get latest token prices from price table
     const tokenPrices = await getLatestTokenPrices();
 
-    // First, get existing routes from the routes cache to know which pairs have routes
+    // First, get existing OKU routes from the routes cache to know which pairs have routes
     const existingRoutesResult = await query(
-      "SELECT routes_data FROM routes_cache ORDER BY pair_from, pair_to"
+      "SELECT routes_data FROM routes_cache WHERE provider = 'Oku' ORDER BY pair_from, pair_to"
     );
     const existingRoutes = existingRoutesResult.rows.map((row: any) =>
       JSON.parse(row.routes_data)
     );
 
     console.log(
-      `Found ${existingRoutes.length} existing routes, checking for slippage...`
+      `Found ${existingRoutes.length} existing OKU routes, checking for slippage...`
     );
 
-    // Use all available connections from routes cache instead of hardcoded pairs
+    // Use all available connections from OKU routes cache instead of hardcoded pairs
     const tokenPairs: { from: any; to: any }[] = [];
 
-    // Extract unique pairs from existing routes
+    // Extract unique pairs from existing OKU routes
     const uniquePairs = new Set<string>();
 
     existingRoutes.forEach((route: PairRoutes) => {
@@ -116,9 +172,9 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
       }
     });
 
-    // If no routes found, fall back to some basic pairs
+    // If no OKU routes found, fall back to some basic pairs
     if (tokenPairs.length === 0) {
-      console.log("No routes found in cache, using fallback pairs...");
+      console.log("No OKU routes found in cache, using fallback pairs...");
       const fallbackPairs = [
         ["USDC", "WETH"],
         ["USDC", "USDT"],
@@ -135,10 +191,12 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
       }
     }
 
-    console.log(`Processing ${tokenPairs.length} token pairs for slippage...`);
+    console.log(
+      `Processing ${tokenPairs.length} token pairs for OKU slippage...`
+    );
 
-    // Clear existing LiFi slippage cache
-    await query("DELETE FROM slippage_cache WHERE provider = 'LiFi'");
+    // Clear existing OKU slippage cache
+    await query("DELETE FROM slippage_cache WHERE provider = 'Oku'");
 
     let successCount = 0;
     let errorCount = 0;
@@ -150,14 +208,14 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
       // Check if we've hit our rate limit
       if (requestCount >= MAX_REQUESTS_PER_HOUR) {
         console.log(
-          `Rate limit reached (${requestCount} requests). Stopping slippage fetch.`
+          `Rate limit reached (${requestCount} requests). Stopping OKU slippage fetch.`
         );
         break;
       }
 
       // Add delay between pairs to avoid rate limiting
       if (i > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay between pairs (reduced with API key)
+        await new Promise((resolve) => setTimeout(resolve, 3000)); // 3 second delay between pairs
       }
 
       try {
@@ -180,8 +238,9 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
 
           // Add delay between amount requests
           if (j > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay between amounts (reduced with API key)
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay between amounts
           }
+
           try {
             // Get token price from price table
             const tokenPrice = tokenPrices.get(from.symbol.toLowerCase());
@@ -196,165 +255,153 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
 
             // Convert USD amount to token amount using actual token price
             // amountUSD / tokenPrice = number of tokens needed
-            // Then multiply by 10^decimals to get the correct token amount
+            // Then limit precision to match token decimals
             const tokenAmount = amountUSD / tokenPrice;
-            const fromAmount = Math.floor(
-              tokenAmount * Math.pow(10, from.decimals)
-            ).toString();
+            const tokenAmountWithPrecision = parseFloat(
+              tokenAmount.toFixed(from.decimals)
+            );
 
             console.log(
-              `💰 ${from.symbol}: $${amountUSD} / $${tokenPrice} = ${tokenAmount} tokens (${fromAmount} wei)`
+              `💰 ${from.symbol}: $${amountUSD} / $${tokenPrice} = ${tokenAmountWithPrecision} tokens (${from.decimals} decimals)`
             );
 
             requestCount++;
             console.log(
-              `Making request ${requestCount}/${MAX_REQUESTS_PER_HOUR} for ${from.symbol}→${to.symbol} at $${amountUSD}`
+              `Making OKU request ${requestCount}/${MAX_REQUESTS_PER_HOUR} for ${from.symbol}→${to.symbol} at $${amountUSD}`
             );
 
-            const headers: any = {
-              "Content-Type": "application/json",
+            // Step 1: Create order for this specific amount
+            const createRequest: OkuCreateRequest = {
+              chain: ETHERLINK_CHAIN_ID,
+              isExactIn: true,
+              tokenAmount: tokenAmountWithPrecision.toString(),
+              slippage: 1, // 1% slippage
             };
 
-            // Add API key if available
-            if (process.env.LIFI_API_KEY) {
-              headers["x-lifi-api-key"] = process.env.LIFI_API_KEY;
-            }
-
-            const response = await axios.post(
-              "https://li.quest/v1/advanced/routes",
+            const createResponse = await axios.post<OkuCreateResponse>(
+              `${OKU_BASE_URL}/Create`,
+              createRequest,
               {
-                fromChainId: ETHERLINK_CHAIN_ID,
-                fromAmount: fromAmount,
-                fromTokenAddress: from.address,
-                toChainId: ETHERLINK_CHAIN_ID,
-                toTokenAddress: to.address,
-                options: { maxPriceImpact: 1 },
-              },
-              {
-                headers,
-                timeout: 10000, // 10 second timeout
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                timeout: 10000,
               }
             );
 
-            if (response.data.routes && response.data.routes.length > 0) {
-              const route = response.data.routes[0]; // Take the first (best) route
-              const fromAmountNum = parseFloat(route.fromAmountUSD);
-              const toAmountNum = parseFloat(route.toAmountUSD);
+            const orderId = createResponse.data.orderId;
 
-              // Calculate slippage as percentage
-              const slippage =
-                ((fromAmountNum - toAmountNum) / fromAmountNum) * 100;
-              slippageAmounts[amountUSD.toString()] =
-                Math.round(slippage * 1000) / 1000; // Round to 3 decimal places
-            }
-          } catch (amountError) {
-            if (
-              amountError instanceof Error &&
-              amountError.message.includes("429")
-            ) {
-              console.log(
-                `Rate limited for ${from.symbol}→${to.symbol} at $${amountUSD}, waiting 5 seconds...`
-              );
-              await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds for rate limit
-              // Retry once (but only if we haven't hit rate limit)
-              if (requestCount < MAX_REQUESTS_PER_HOUR) {
-                try {
-                  requestCount++;
-                  console.log(
-                    `Retry request ${requestCount}/${MAX_REQUESTS_PER_HOUR} for ${from.symbol}→${to.symbol} at $${amountUSD}`
-                  );
+            // Step 2: Update quote parameters
+            const updateRequest: OkuUpdateQuoteParamsRequest = {
+              orderId,
+              chain: ETHERLINK_CHAIN_ID,
+              enabledMarkets: ["threeroute", "usor"],
+              isExactIn: true,
+              inTokenAddress: from.address,
+              outTokenAddress: to.address,
+              tokenAmount: tokenAmountWithPrecision.toString(),
+              gasPrice: "1000000000", // 1 gwei
+              slippage: 1,
+            };
 
-                  // Recalculate fromAmount for retry using token price
-                  const retryTokenPrice = tokenPrices.get(
-                    from.symbol.toLowerCase()
-                  );
+            await axios.post<OkuUpdateQuoteParamsResponse>(
+              `${OKU_BASE_URL}/UpdateQuoteParams`,
+              updateRequest,
+              {
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                timeout: 10000,
+              }
+            );
 
-                  if (!retryTokenPrice) {
-                    console.log(
-                      `⚠️  No price found for token ${from.symbol} during retry, skipping...`
-                    );
-                    slippageAmounts[amountUSD.toString()] = null;
-                    continue;
-                  }
+            // Step 3: Get quotes
+            const quotesRequest: OkuGetQuotesRequest = {
+              orderId,
+              fetchedRouters: ["threeroute", "usor"],
+              waitTime: "5000", // 5 seconds wait time
+            };
 
-                  const retryTokenAmount = amountUSD / retryTokenPrice;
-                  const retryFromAmount = Math.floor(
-                    retryTokenAmount * Math.pow(10, from.decimals)
-                  ).toString();
+            const quotesResponse = await axios.post<OkuGetQuotesResponse>(
+              `${OKU_BASE_URL}/GetNewQuotes`,
+              quotesRequest,
+              {
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                timeout: 15000,
+              }
+            );
 
-                  const retryHeaders: any = {
-                    "Content-Type": "application/json",
-                  };
+            // Process quotes to find the best one
+            const quotes = quotesResponse.data.quotes;
+            let bestQuote: OkuQuote | null = null;
+            let bestRouter = "";
 
-                  // Add API key if available
-                  if (process.env.LIFI_API_KEY) {
-                    retryHeaders["x-lifi-api-key"] = process.env.LIFI_API_KEY;
-                  }
-
-                  const retryResponse = await axios.post(
-                    "https://li.quest/v1/advanced/routes",
-                    {
-                      fromChainId: ETHERLINK_CHAIN_ID,
-                      fromAmount: retryFromAmount,
-                      fromTokenAddress: from.address,
-                      toChainId: ETHERLINK_CHAIN_ID,
-                      toTokenAddress: to.address,
-                      options: { maxPriceImpact: 1 },
-                    },
-                    {
-                      headers: retryHeaders,
-                      timeout: 10000,
-                    }
-                  );
-
-                  if (
-                    retryResponse.data.routes &&
-                    retryResponse.data.routes.length > 0
-                  ) {
-                    const route = retryResponse.data.routes[0];
-                    const fromAmountNum = parseFloat(route.fromAmountUSD);
-                    const toAmountNum = parseFloat(route.toAmountUSD);
-                    const slippage =
-                      ((fromAmountNum - toAmountNum) / fromAmountNum) * 100;
-                    slippageAmounts[amountUSD.toString()] =
-                      Math.round(slippage * 1000) / 1000;
-                  }
-                } catch (retryError) {
-                  console.error(
-                    `Retry failed for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
-                    retryError instanceof Error
-                      ? retryError.message
-                      : "Unknown error"
-                  );
-                  // Mark this amount as failed
-                  slippageAmounts[amountUSD.toString()] = null;
+            Object.keys(quotes).forEach((router) => {
+              const quote = quotes[router];
+              if (
+                quote.fetched &&
+                quote.quote &&
+                !quote.quote.simulationError
+              ) {
+                if (!bestQuote) {
+                  bestQuote = quote.quote;
+                  bestRouter = router;
                 }
+              }
+            });
+
+            if (
+              bestQuote &&
+              (bestQuote as OkuQuote).inAmount &&
+              (bestQuote as OkuQuote).outAmount
+            ) {
+              // Calculate slippage
+              const inAmountNum = parseFloat((bestQuote as OkuQuote).inAmount);
+              const outAmountNum = parseFloat(
+                (bestQuote as OkuQuote).outAmount
+              );
+
+              // Get output token price to convert to USD
+              const outTokenPrice = tokenPrices.get(to.symbol.toLowerCase());
+              if (outTokenPrice) {
+                const inAmountUSD = inAmountNum * tokenPrice;
+                const outAmountUSD = outAmountNum * outTokenPrice;
+
+                // Calculate slippage as percentage
+                const slippage =
+                  ((inAmountUSD - outAmountUSD) / inAmountUSD) * 100;
+                slippageAmounts[amountUSD.toString()] =
+                  Math.round(slippage * 1000) / 1000; // Round to 3 decimal places
+
+                console.log(
+                  `✅ ${from.symbol}→${
+                    to.symbol
+                  } at $${amountUSD}: ${slippage.toFixed(
+                    3
+                  )}% slippage via ${bestRouter}`
+                );
               } else {
                 console.log(
-                  `Skipping retry due to rate limit (${requestCount}/${MAX_REQUESTS_PER_HOUR})`
+                  `⚠️  No price found for output token ${to.symbol}, cannot calculate slippage`
                 );
+                slippageAmounts[amountUSD.toString()] = null;
               }
             } else {
-              // Check if it's a 400 error (bad request) which might indicate unsupported pair
-              if (
-                amountError instanceof Error &&
-                amountError.message.includes("400")
-              ) {
-                console.log(
-                  `⚠️  ${from.symbol}→${to.symbol} at $${amountUSD}: Bad request (400) - this pair might not be supported or have insufficient liquidity`
-                );
-              } else {
-                console.error(
-                  `Error fetching quote for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
-                  amountError instanceof Error
-                    ? amountError.message
-                    : "Unknown error"
-                );
-              }
-              // Mark this amount as failed
+              console.log(
+                `❌ No valid quotes found for ${from.symbol}→${to.symbol} at $${amountUSD}`
+              );
               slippageAmounts[amountUSD.toString()] = null;
             }
-            // Keep slippage as null for this amount if all attempts fail
+          } catch (amountError) {
+            console.error(
+              `Error fetching OKU quote for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
+              amountError instanceof Error
+                ? amountError.message
+                : "Unknown error"
+            );
+            slippageAmounts[amountUSD.toString()] = null;
           }
         }
 
@@ -371,7 +418,7 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
             slippageAmounts["50000"],
             slippageAmounts["100000"],
             calculationTimestamp,
-            "LiFi",
+            "Oku",
           ]
         );
 
@@ -393,19 +440,19 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
 
         if (hasSuccessfulAmounts) {
           console.log(
-            `✓ ${from.symbol}→${to.symbol}: Successful amounts: ${successfulAmounts}`
+            `✓ OKU ${from.symbol}→${to.symbol}: Successful amounts: ${successfulAmounts}`
           );
           if (failedAmounts) {
             console.log(`  Failed amounts: ${failedAmounts}`);
           }
           successCount++;
         } else {
-          console.log(`✗ ${from.symbol}→${to.symbol}: All amounts failed`);
+          console.log(`✗ OKU ${from.symbol}→${to.symbol}: All amounts failed`);
           errorCount++;
         }
       } catch (error) {
         console.error(
-          `Error processing slippage for ${from.symbol}→${to.symbol}:`,
+          `Error processing OKU slippage for ${from.symbol}→${to.symbol}:`,
           error instanceof Error ? error.message : "Unknown error"
         );
         errorCount++;
@@ -414,7 +461,7 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
 
     // Get final summary of all amounts
     const allAmountsResult = await query(
-      "SELECT amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache WHERE provider = 'LiFi'"
+      "SELECT amount_1000, amount_10000, amount_50000, amount_100000 FROM slippage_cache WHERE provider = 'Oku'"
     );
     const allAmounts = allAmountsResult.rows;
 
@@ -434,31 +481,31 @@ export async function fetchAndCacheSlippageData(): Promise<void> {
     });
 
     console.log(
-      `Slippage data fetch completed. Pairs: Success: ${successCount}, Errors: ${errorCount}`
+      `OKU slippage data fetch completed. Pairs: Success: ${successCount}, Errors: ${errorCount}`
     );
     console.log(
       `Amounts: Total: ${totalAmounts}, Successful: ${successfulAmounts}, Failed: ${failedAmounts}`
     );
   } catch (error) {
-    console.error("Error in fetchAndCacheSlippageData:", error);
+    console.error("Error in fetchAndCacheOkuSlippageData:", error);
   }
 }
 
-export async function getCachedSlippageData(): Promise<{
+export async function getCachedOkuSlippageData(): Promise<{
   slippageData: SlippageData[];
   lastUpdated: string | null;
   calculationTimestamp: string | null;
 }> {
   try {
-    // Get the latest calculation timestamp for LiFi
+    // Get the latest calculation timestamp for OKU
     const latestTimestampResult = await query(
-      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL AND provider = 'LiFi'"
+      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL AND provider = 'Oku'"
     );
     const latestTimestamp =
       latestTimestampResult.rows[0]?.latest_timestamp || null;
 
     if (!latestTimestamp) {
-      console.log("No slippage data with calculation timestamp found");
+      console.log("No OKU slippage data with calculation timestamp found");
       return {
         slippageData: [],
         lastUpdated: null,
@@ -466,11 +513,11 @@ export async function getCachedSlippageData(): Promise<{
       };
     }
 
-    // Get all cached LiFi slippage data for the latest calculation timestamp
+    // Get all cached OKU slippage data for the latest calculation timestamp
     const rowsResult = await query(
       `SELECT pair_from, pair_to, amount_1000, amount_10000, amount_50000, amount_100000, calculation_timestamp 
        FROM slippage_cache 
-       WHERE calculation_timestamp = $1 AND provider = 'LiFi'
+       WHERE calculation_timestamp = $1 AND provider = 'Oku'
        ORDER BY pair_from, pair_to`,
       [latestTimestamp]
     );
@@ -478,7 +525,7 @@ export async function getCachedSlippageData(): Promise<{
 
     const slippageData: SlippageData[] = rows.map((row: any) => ({
       pair: { from: row.pair_from, to: row.pair_to },
-      provider: "LiFi",
+      provider: "OKU",
       amounts: {
         "1000": row.amount_1000,
         "10000": row.amount_10000,
@@ -489,39 +536,39 @@ export async function getCachedSlippageData(): Promise<{
 
     // Get the most recent update timestamp for backward compatibility
     const lastUpdatedResult = await query(
-      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'LiFi'",
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'Oku'",
       [latestTimestamp]
     );
     const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
 
     console.log(
-      `📊 Retrieved ${slippageData.length} slippage records from calculation: ${latestTimestamp}`
+      `📊 Retrieved ${slippageData.length} OKU slippage records from calculation: ${latestTimestamp}`
     );
 
     return { slippageData, lastUpdated, calculationTimestamp: latestTimestamp };
   } catch (error) {
-    console.error("Error getting cached slippage data:", error);
+    console.error("Error getting cached OKU slippage data:", error);
     return { slippageData: [], lastUpdated: null, calculationTimestamp: null };
   }
 }
 
-// Function to manually trigger slippage calculation
-export async function manualSlippageCalculation(): Promise<void> {
-  console.log("Manual slippage calculation triggered...");
+// Function to manually trigger OKU slippage calculation
+export async function manualOkuSlippageCalculation(): Promise<void> {
+  console.log("Manual OKU slippage calculation triggered...");
 
   // Reset request count for manual runs
   requestCount = 0;
 
   try {
-    await fetchAndCacheSlippageData();
-    console.log("Manual slippage calculation completed successfully");
+    await fetchAndCacheOkuSlippageData();
+    console.log("Manual OKU slippage calculation completed successfully");
   } catch (error) {
-    console.error("Manual slippage calculation failed:", error);
+    console.error("Manual OKU slippage calculation failed:", error);
   }
 }
 
-// Function to get current slippage cache status
-export async function getSlippageCacheStatus(): Promise<{
+// Function to get current OKU slippage cache status
+export async function getOkuSlippageCacheStatus(): Promise<{
   totalPairs: number;
   successfulPairs: number;
   failedPairs: number;
@@ -529,9 +576,9 @@ export async function getSlippageCacheStatus(): Promise<{
   latestCalculationTimestamp: string | null;
 }> {
   try {
-    // Get the latest calculation timestamp for LiFi
+    // Get the latest calculation timestamp for OKU
     const latestTimestampResult = await query(
-      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL AND provider = 'LiFi'"
+      "SELECT MAX(calculation_timestamp) as latest_timestamp FROM slippage_cache WHERE calculation_timestamp IS NOT NULL AND provider = 'Oku'"
     );
     const latestCalculationTimestamp =
       latestTimestampResult.rows[0]?.latest_timestamp || null;
@@ -548,7 +595,7 @@ export async function getSlippageCacheStatus(): Promise<{
 
     // Count total pairs for the latest calculation
     const totalResult = await query(
-      "SELECT COUNT(*) as count FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'LiFi'",
+      "SELECT COUNT(*) as count FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'Oku'",
       [latestCalculationTimestamp]
     );
     const totalPairs = parseInt(totalResult.rows[0].count);
@@ -557,7 +604,7 @@ export async function getSlippageCacheStatus(): Promise<{
     const successfulResult = await query(
       `
       SELECT COUNT(*) as count FROM slippage_cache 
-      WHERE calculation_timestamp = $1 AND provider = 'LiFi'
+      WHERE calculation_timestamp = $1 AND provider = 'Oku'
       AND (amount_1000 IS NOT NULL 
       OR amount_10000 IS NOT NULL 
       OR amount_50000 IS NOT NULL 
@@ -569,7 +616,7 @@ export async function getSlippageCacheStatus(): Promise<{
 
     // Get last updated timestamp for the latest calculation
     const lastUpdatedResult = await query(
-      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'LiFi'",
+      "SELECT MAX(last_updated) as last_updated FROM slippage_cache WHERE calculation_timestamp = $1 AND provider = 'Oku'",
       [latestCalculationTimestamp]
     );
     const lastUpdated = lastUpdatedResult.rows[0]?.last_updated || null;
@@ -582,7 +629,7 @@ export async function getSlippageCacheStatus(): Promise<{
       latestCalculationTimestamp,
     };
   } catch (error) {
-    console.error("Error getting slippage cache status:", error);
+    console.error("Error getting OKU slippage cache status:", error);
     return {
       totalPairs: 0,
       successfulPairs: 0,
