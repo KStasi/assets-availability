@@ -78,8 +78,15 @@ export async function fetchAndCacheLiFiData(): Promise<void> {
 
           // Store in database
           await query(
-            "INSERT INTO routes_cache (pair_from, pair_to, routes_data) VALUES ($1, $2, $3)",
-            [from.symbol, to.symbol, JSON.stringify(pairRoute)]
+            `
+            INSERT INTO routes_cache (pair_from, pair_to, routes_data, provider)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (pair_from, pair_to, provider) 
+            DO UPDATE SET 
+              routes_data = EXCLUDED.routes_data,
+              last_updated = CURRENT_TIMESTAMP
+          `,
+            [from.symbol, to.symbol, JSON.stringify(pairRoute), "LiFi"]
           );
 
           successCount++;

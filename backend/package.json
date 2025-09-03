@@ -6,7 +6,9 @@
     "build": "tsc",
     "dev": "ts-node-dev src/server.ts",
     "start": "node dist/server.js",
-    "create-price-table": "ts-node src/createPriceTable.ts"
+    "create-price-table": "ts-node src/createPriceTable.ts",
+    "view-prices": "ts-node src/viewPrices.ts",
+    "cleanup-routes": "ts-node src/cleanupRoutes.ts"
   },
   "dependencies": {
     "@assets-availability/types": "*",

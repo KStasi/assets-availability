@@ -18,6 +18,7 @@ export async function runMigrations(): Promise<void> {
         pair_from VARCHAR(100) NOT NULL,
         pair_to VARCHAR(100) NOT NULL,
         routes_data TEXT NOT NULL,
+        provider VARCHAR(50) DEFAULT 'LiFi',
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -36,9 +37,25 @@ export async function runMigrations(): Promise<void> {
       );
     `);
 
+    // Add provider column to existing routes_cache table if it doesn't exist
+    await queryWithRetry(`
+      ALTER TABLE routes_cache 
+      ADD COLUMN IF NOT EXISTS provider VARCHAR(50) DEFAULT 'LiFi';
+    `);
+
     // Create indexes
     await queryWithRetry(`
       CREATE INDEX IF NOT EXISTS idx_routes_pair ON routes_cache(pair_from, pair_to);
+    `);
+
+    await queryWithRetry(`
+      CREATE INDEX IF NOT EXISTS idx_routes_provider ON routes_cache(provider);
+    `);
+
+    // Create unique constraint for pair + provider combination
+    await queryWithRetry(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_pair_provider_unique 
+      ON routes_cache(pair_from, pair_to, provider);
     `);
 
     await queryWithRetry(`

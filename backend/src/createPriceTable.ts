@@ -27,8 +27,6 @@ const priceData: PriceData[] = [
     timestamp: "2025-05-29 12:43:44.657 +0100",
   },
   { token: "xtz", price: 0.638749, timestamp: "2025-05-29 12:43:44.657 +0100" },
-  { token: "eutbl", price: 1.17, timestamp: "2025-05-29 12:43:44.657 +0100" },
-  { token: "ustbl", price: 1.045, timestamp: "2025-05-29 12:43:44.657 +0100" },
   {
     token: "xu3o8",
     price: 4.4946187249,

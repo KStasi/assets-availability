@@ -16,6 +16,10 @@ interface MatrixData {
   };
   lastUpdated?: string;
   routeCount?: number;
+  providers?: {
+    lifi: { count: number; lastUpdated?: string };
+    oku: { count: number; lastUpdated?: string };
+  };
   slippageData?: SlippageData[];
   slippageLastUpdated?: string;
   slippageCalculationTimestamp?: string;
@@ -90,6 +94,7 @@ function App() {
           routes: routeData,
           lastUpdated: routesData.lastUpdated,
           routeCount: routesData.count,
+          providers: routesData.providers,
           slippageData: slippageData.slippageData,
           slippageLastUpdated: slippageData.lastUpdated,
           slippageCalculationTimestamp: slippageData.calculationTimestamp,
@@ -123,72 +128,123 @@ function App() {
       <div
         style={{
           marginBottom: "20px",
-          padding: "10px",
+          padding: "8px 12px",
           backgroundColor: "#f8f9fa",
           borderRadius: "4px",
+          fontSize: "13px",
+          lineHeight: "1.4",
         }}
       >
-        <strong>Debug Info:</strong> Tokens: {data.tokens.join(", ")} | Matrix
-        entries: {Object.keys(data.matrix).length} | Routes entries:{" "}
-        {Object.keys(data.routes).length} | Route count: {data.routeCount || 0}
-        {data.lastUpdated && (
+        <strong>Info:</strong> {data.tokens.length} tokens |{" "}
+        {data.routeCount || 0} routes
+        {data.providers && (
           <span>
             {" "}
-            | Last updated: {new Date(data.lastUpdated).toLocaleString()}
+            | LiFi: {data.providers.lifi.count} | Oku:{" "}
+            {data.providers.oku.count}
           </span>
         )}
-        {data.slippageLastUpdated && (
-          <span>
-            {" "}
-            | Slippage updated:{" "}
-            {new Date(data.slippageLastUpdated).toLocaleString()}
-          </span>
+        {data.lastUpdated && (
+          <span> | Updated: {new Date(data.lastUpdated).toLocaleString()}</span>
         )}
       </div>
-      <table className="matrix-table">
-        <thead>
-          <tr>
-            <th></th>
-            {data.tokens.map((token) => (
-              <th key={token}>{token}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.tokens.map((fromToken) => (
-            <tr key={fromToken}>
-              <th>{fromToken}</th>
-              {data.tokens.map((toToken) => (
-                <td key={`${fromToken}-${toToken}`}>
-                  {data.matrix[fromToken][toToken].length > 0 ? (
-                    <>
-                      {data.matrix[fromToken][toToken].map((aggregator) => (
-                        <div key={aggregator} className="tooltip">
-                          <div
-                            className={`aggregator-badge ${aggregator.toLowerCase()}`}
-                          >
-                            {aggregator}
-                          </div>
-                          <div className="tooltip-content">
-                            <div className="dex-list">
-                              DEXes:{" "}
-                              {data.routes[fromToken][toToken][
-                                aggregator
-                              ]?.join(", ") || "N/A"}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </>
-                  ) : (
-                    <span style={{ color: "#ccc" }}>-</span>
-                  )}
-                </td>
+      <div className="table-wrapper">
+        <table className="matrix-table">
+          <thead>
+            <tr>
+              <th></th>
+              {data.tokens.map((token) => (
+                <th key={token}>{token}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.tokens.map((fromToken) => (
+              <tr key={fromToken}>
+                <th>{fromToken}</th>
+                {data.tokens.map((toToken) => (
+                  <td key={`${fromToken}-${toToken}`}>
+                    {data.matrix[fromToken][toToken].length > 0 ? (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "2px",
+                        }}
+                      >
+                        {data.matrix[fromToken][toToken].map((aggregator) => {
+                          const dexes =
+                            data.routes[fromToken][toToken][aggregator] || [];
+                          return (
+                            <div key={aggregator}>
+                              {aggregator === "LiFi" ? (
+                                <div
+                                  className={`aggregator-badge ${aggregator.toLowerCase()}`}
+                                >
+                                  LiFi
+                                </div>
+                              ) : (
+                                // For Oku, show each DEX separately
+                                dexes.map((dex, index) => {
+                                  const isSimulationFailed = dex.endsWith("✗");
+                                  let cleanDexName = isSimulationFailed
+                                    ? dex.slice(0, -1)
+                                    : dex;
+                                  // Transform threeroute to 3route for display
+                                  if (cleanDexName === "threeroute") {
+                                    cleanDexName = "3route";
+                                  }
+                                  return (
+                                    <div
+                                      key={`${aggregator}-${index}`}
+                                      className={`aggregator-badge ${aggregator.toLowerCase()}${
+                                        isSimulationFailed
+                                          ? " simulation-failed"
+                                          : ""
+                                      }`}
+                                      style={{
+                                        marginBottom:
+                                          index < dexes.length - 1
+                                            ? "2px"
+                                            : "0",
+                                      }}
+                                    >
+                                      {cleanDexName.length > 8
+                                        ? `Oku:${cleanDexName.substring(
+                                            0,
+                                            8
+                                          )}...`
+                                        : `Oku:${cleanDexName}`}
+                                      {isSimulationFailed && (
+                                        <span
+                                          style={{
+                                            marginLeft: "3px",
+                                            color: "#fff",
+                                            fontSize: "10px",
+                                            fontWeight: "bold",
+                                          }}
+                                        >
+                                          ⚠
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <span style={{ color: "#ccc" }}>-</span>
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {/* Slippage Table */}
       {data.slippageData && data.slippageData.length > 0 && (
@@ -202,46 +258,48 @@ function App() {
               {new Date(data.slippageCalculationTimestamp).toLocaleString()}
             </p>
           )}
-          <table className="matrix-table">
-            <thead>
-              <tr>
-                <th>Pool</th>
-                <th>$1,000</th>
-                <th>$10,000</th>
-                <th>$50,000</th>
-                <th>$100,000</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.slippageData.map((slippage) => (
-                <tr key={`${slippage.pair.from}-${slippage.pair.to}`}>
-                  <td>
-                    {slippage.pair.from}→{slippage.pair.to}
-                  </td>
-                  <td>
-                    {slippage.amounts["1000"] !== null
-                      ? `${slippage.amounts["1000"]}%`
-                      : "-"}
-                  </td>
-                  <td>
-                    {slippage.amounts["10000"] !== null
-                      ? `${slippage.amounts["10000"]}%`
-                      : "-"}
-                  </td>
-                  <td>
-                    {slippage.amounts["50000"] !== null
-                      ? `${slippage.amounts["50000"]}%`
-                      : "-"}
-                  </td>
-                  <td>
-                    {slippage.amounts["100000"] !== null
-                      ? `${slippage.amounts["100000"]}%`
-                      : "-"}
-                  </td>
+          <div className="table-wrapper">
+            <table className="matrix-table">
+              <thead>
+                <tr>
+                  <th>Pool</th>
+                  <th>$1,000</th>
+                  <th>$10,000</th>
+                  <th>$50,000</th>
+                  <th>$100,000</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.slippageData.map((slippage) => (
+                  <tr key={`${slippage.pair.from}-${slippage.pair.to}`}>
+                    <td>
+                      {slippage.pair.from}→{slippage.pair.to}
+                    </td>
+                    <td>
+                      {slippage.amounts["1000"] !== null
+                        ? `${slippage.amounts["1000"]}%`
+                        : "-"}
+                    </td>
+                    <td>
+                      {slippage.amounts["10000"] !== null
+                        ? `${slippage.amounts["10000"]}%`
+                        : "-"}
+                    </td>
+                    <td>
+                      {slippage.amounts["50000"] !== null
+                        ? `${slippage.amounts["50000"]}%`
+                        : "-"}
+                    </td>
+                    <td>
+                      {slippage.amounts["100000"] !== null
+                        ? `${slippage.amounts["100000"]}%`
+                        : "-"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
