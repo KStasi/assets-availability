@@ -1,5 +1,8 @@
 import { Pool, PoolClient } from "pg";
 
+// Database table constants
+export const PRICES_TABLE = "prices";
+
 let poolInstance: Pool | null = null;
 
 export function getPool(): Pool {
@@ -35,8 +38,8 @@ export async function query(text: string, params?: any[]): Promise<any> {
 }
 
 export async function queryWithRetry(
-  text: string, 
-  params?: any[], 
+  text: string,
+  params?: any[],
   maxRetries: number = 3,
   delayMs: number = 1000
 ): Promise<any> {
@@ -44,14 +47,17 @@ export async function queryWithRetry(
     try {
       return await query(text, params);
     } catch (error) {
-      console.log(`Database query attempt ${attempt}/${maxRetries} failed:`, error instanceof Error ? error.message : 'Unknown error');
-      
+      console.log(
+        `Database query attempt ${attempt}/${maxRetries} failed:`,
+        error instanceof Error ? error.message : "Unknown error"
+      );
+
       if (attempt === maxRetries) {
         throw error;
       }
-      
+
       // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, delayMs * attempt));
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
     }
   }
 }

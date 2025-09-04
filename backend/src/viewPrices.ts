@@ -1,4 +1,4 @@
-import { query } from "./db";
+import { query, PRICES_TABLE } from "./db";
 import dotenv from "dotenv";
 
 // Load environment variables
@@ -31,7 +31,7 @@ class PriceViewer {
     try {
       const result = await query(`
         SELECT id, token, price, timestamp, created_at
-        FROM price
+        FROM ${PRICES_TABLE}
         ORDER BY token, timestamp DESC
       `);
       return result.rows;
@@ -49,7 +49,7 @@ class PriceViewer {
       const result = await query(`
         SELECT DISTINCT ON (token) 
           id, token, price, timestamp, created_at
-        FROM price
+        FROM ${PRICES_TABLE}
         ORDER BY token, timestamp DESC
       `);
       return result.rows;
@@ -67,7 +67,7 @@ class PriceViewer {
       const result = await query(
         `
         SELECT id, token, price, timestamp, created_at
-        FROM price
+        FROM ${PRICES_TABLE}
         WHERE token = $1
         ORDER BY timestamp DESC
       `,
@@ -93,10 +93,10 @@ class PriceViewer {
           COUNT(*) as total_records,
           MIN(price) as min_price,
           MAX(price) as max_price
-        FROM price
+        FROM ${PRICES_TABLE}
         WHERE timestamp = (
           SELECT MAX(timestamp) 
-          FROM price p2 
+          FROM ${PRICES_TABLE} p2 
           WHERE p2.token = price.token
         )
         GROUP BY token, price, timestamp
@@ -128,7 +128,7 @@ class PriceViewer {
         `
         SELECT DISTINCT ON (token) 
           id, token, price, timestamp, created_at
-        FROM price
+        FROM ${PRICES_TABLE}
         WHERE token ILIKE $1
         ORDER BY token, timestamp DESC
       `,
@@ -153,7 +153,7 @@ class PriceViewer {
         `
         SELECT DISTINCT ON (token) 
           id, token, price, timestamp, created_at
-        FROM price
+        FROM ${PRICES_TABLE}
         WHERE price >= $1
         ORDER BY token, timestamp DESC
       `,
@@ -273,15 +273,17 @@ class PriceViewer {
    */
   async getDatabaseStats(): Promise<void> {
     try {
-      const totalRecords = await query("SELECT COUNT(*) as count FROM price");
+      const totalRecords = await query(
+        `SELECT COUNT(*) as count FROM ${PRICES_TABLE}`
+      );
       const uniqueTokens = await query(
-        "SELECT COUNT(DISTINCT token) as count FROM price"
+        `SELECT COUNT(DISTINCT token) as count FROM ${PRICES_TABLE}`
       );
       const latestUpdate = await query(
-        "SELECT MAX(timestamp) as latest FROM price"
+        `SELECT MAX(timestamp) as latest FROM ${PRICES_TABLE}`
       );
       const oldestRecord = await query(
-        "SELECT MIN(timestamp) as oldest FROM price"
+        `SELECT MIN(timestamp) as oldest FROM ${PRICES_TABLE}`
       );
 
       console.log("\n📊 Database Statistics");

@@ -1,5 +1,5 @@
 import axios from "axios";
-import { query } from "./db";
+import { query, PRICES_TABLE } from "./db";
 import { PairRoutes } from "./types";
 
 const ETHERLINK_CHAIN_ID = "42793";
@@ -83,6 +83,32 @@ interface OkuPingResponse {
   status: string;
 }
 
+// Helper function to create a new Oku order
+async function createOkuOrder(): Promise<string> {
+  console.log("🆕 Creating new Oku order...");
+  const createRequest: OkuCreateRequest = {
+    chain: ETHERLINK_CHAIN_ID,
+    isExactIn: true,
+    tokenAmount: "1", // Use 1 as base amount for route checking
+    slippage: 1, // 1% slippage
+  };
+
+  const createResponse = await axios.post<OkuCreateResponse>(
+    `${OKU_BASE_URL}/Create`,
+    createRequest,
+    {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeout: 10000,
+    }
+  );
+
+  const orderId = createResponse.data.orderId;
+  console.log(`✅ Created Oku order with ID: ${orderId}`);
+  return orderId;
+}
+
 // Function to get latest token prices from price table
 async function getLatestTokenPrices(): Promise<Map<string, number>> {
   try {
@@ -92,7 +118,7 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
         token, 
         price, 
         timestamp
-      FROM price 
+      FROM ${PRICES_TABLE} 
       ORDER BY token, timestamp DESC
     `);
 
@@ -107,6 +133,19 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
       priceMap.set("lbtc", wbtcPrice);
       console.log(
         `🔄 Temporary workaround: Using WBTC price ($${wbtcPrice}) for LBTC`
+      );
+    }
+
+    // Use XTZ price + 3.1% for stXTZ if stXTZ price not present
+    const xtzPrice = priceMap.get("xtz");
+    const stxtzPrice = priceMap.get("stxtz");
+    if (xtzPrice && !stxtzPrice) {
+      const stxtzCalculatedPrice = xtzPrice * 1.031; // XTZ + 3.1%
+      priceMap.set("stxtz", stxtzCalculatedPrice);
+      console.log(
+        `🔄 Using XTZ price + 3.1% for stXTZ: $${xtzPrice} * 1.031 = $${stxtzCalculatedPrice.toFixed(
+          6
+        )}`
       );
     }
 
@@ -160,34 +199,31 @@ export async function fetchAndCacheOkuData(): Promise<void> {
 
     // Step 1: Create a single order that we'll reuse
     console.log("�� Creating initial Oku order...");
-    const createRequest: OkuCreateRequest = {
-      chain: ETHERLINK_CHAIN_ID,
-      isExactIn: true,
-      tokenAmount: "1", // Use 1 as base amount for route checking
-      slippage: 1, // 1% slippage
-    };
-
-    const createResponse = await axios.post<OkuCreateResponse>(
-      `${OKU_BASE_URL}/Create`,
-      createRequest,
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        timeout: 10000,
-      }
-    );
-
-    const orderId = createResponse.data.orderId;
-    console.log(`✅ Created Oku order with ID: ${orderId}`);
 
     const results: PairRoutes[] = [];
     let successCount = 0;
     let errorCount = 0;
+    let currentOrderId: string | null = null;
+    let pairsProcessedWithCurrentOrder = 0;
+    const ORDER_REFRESH_INTERVAL = 50; // Create new order every 50 pairs
 
-    // Process each pair using the same order
+    // Process each pair, creating new orders as needed
     for (let i = 0; i < tokenPairs.length; i++) {
       const { from, to } = tokenPairs[i];
+
+      // Create new order if needed (every 50 pairs or first iteration)
+      if (
+        currentOrderId === null ||
+        pairsProcessedWithCurrentOrder >= ORDER_REFRESH_INTERVAL
+      ) {
+        if (currentOrderId !== null) {
+          console.log(
+            `🔄 Refreshing order after ${pairsProcessedWithCurrentOrder} pairs...`
+          );
+        }
+        currentOrderId = await createOkuOrder();
+        pairsProcessedWithCurrentOrder = 0;
+      }
 
       try {
         console.log(
@@ -220,7 +256,7 @@ export async function fetchAndCacheOkuData(): Promise<void> {
 
         // Step 2: Update quote parameters for this pair
         const updateRequest: OkuUpdateQuoteParamsRequest = {
-          orderId,
+          orderId: currentOrderId,
           chain: ETHERLINK_CHAIN_ID,
           enabledMarkets: ["threeroute", "usor"], // Available routers
           isExactIn: true,
@@ -250,12 +286,33 @@ export async function fetchAndCacheOkuData(): Promise<void> {
               }
             );
             break; // Success, exit retry loop
-          } catch (error) {
+          } catch (error: any) {
+            // Check if error is "order already completed or canceled"
+            if (
+              error.response?.status === 500 &&
+              error.response?.data?.message?.includes(
+                "order already completed or canceled"
+              )
+            ) {
+              console.log(
+                `  🔄 Order ${currentOrderId} already completed/canceled, creating new order...`
+              );
+              // Create new order and update currentOrderId
+              currentOrderId = await createOkuOrder();
+              pairsProcessedWithCurrentOrder = 0;
+              // Update the orderId in the request
+              updateRequest.orderId = currentOrderId;
+              // Reset retry count since we have a new order
+              updateParamsRetryCount = 0;
+              continue;
+            }
+
             updateParamsRetryCount++;
             if (updateParamsRetryCount < updateParamsMaxRetries) {
               console.log(
                 `  🔄 Retry ${updateParamsRetryCount}/${updateParamsMaxRetries} updating quote params for ${from.symbol}→${to.symbol} (waiting 5s)...`
               );
+              console.log(error);
               await new Promise((resolve) => setTimeout(resolve, 5000));
             } else {
               console.log(
@@ -267,7 +324,7 @@ export async function fetchAndCacheOkuData(): Promise<void> {
         }
         // Step 3: Get quotes with retry logic
         const quotesRequest: OkuGetQuotesRequest = {
-          orderId,
+          orderId: currentOrderId,
           fetchedRouters: ["threeroute", "usor"],
           waitTime: "3000", // 3 seconds wait time (reduced for faster processing)
         };
@@ -306,9 +363,9 @@ export async function fetchAndCacheOkuData(): Promise<void> {
               retryCount++;
               if (retryCount < maxRetries) {
                 console.log(
-                  `  🔄 Retry ${retryCount}/${maxRetries} for ${from.symbol}→${to.symbol} - no quotes fetched (waiting 1s)...`
+                  `  🔄 Retry ${retryCount}/${maxRetries} for ${from.symbol}→${to.symbol} - no quotes fetched (waiting 2s)...`
                 );
-                await new Promise((resolve) => setTimeout(resolve, 3000));
+                await new Promise((resolve) => setTimeout(resolve, 2000));
               } else {
                 console.log(
                   `  ❌ Max retries reached for ${from.symbol}→${to.symbol} - no quotes fetched`
@@ -316,7 +373,27 @@ export async function fetchAndCacheOkuData(): Promise<void> {
                 break; // Exit retry loop after max retries
               }
             }
-          } catch (error) {
+          } catch (error: any) {
+            // Check if error is "order already completed or canceled"
+            if (
+              error.response?.status === 500 &&
+              error.response?.data?.message?.includes(
+                "order already completed or canceled"
+              )
+            ) {
+              console.log(
+                `  🔄 Order ${currentOrderId} already completed/canceled during quotes fetch, creating new order...`
+              );
+              // Create new order and update currentOrderId
+              currentOrderId = await createOkuOrder();
+              pairsProcessedWithCurrentOrder = 0;
+              // Update the orderId in the request
+              quotesRequest.orderId = currentOrderId;
+              // Reset retry count since we have a new order
+              retryCount = 0;
+              continue;
+            }
+
             retryCount++;
             if (retryCount < maxRetries) {
               console.log(
@@ -406,6 +483,9 @@ export async function fetchAndCacheOkuData(): Promise<void> {
             `  ❌ No supported routes found for ${from.symbol}→${to.symbol}`
           );
         }
+
+        // Increment counter for current order
+        pairsProcessedWithCurrentOrder++;
 
         // Small delay to avoid rate limiting
         await new Promise((resolve) => setTimeout(resolve, 200));

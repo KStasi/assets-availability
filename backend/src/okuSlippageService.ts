@@ -1,5 +1,5 @@
 import axios from "axios";
-import { query } from "./db";
+import { query, PRICES_TABLE } from "./db";
 import { SlippageData, PairRoutes } from "./types";
 
 // Interface for token price data
@@ -92,7 +92,7 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
         token, 
         price, 
         timestamp
-      FROM price 
+      FROM ${PRICES_TABLE} 
       ORDER BY token, timestamp DESC
     `);
 
@@ -110,12 +110,51 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
       );
     }
 
+    // Use XTZ price + 3.1% for stXTZ if stXTZ price not present
+    const xtzPrice = priceMap.get("xtz");
+    const stxtzPrice = priceMap.get("stxtz");
+    if (xtzPrice && !stxtzPrice) {
+      const stxtzCalculatedPrice = xtzPrice * 1.031; // XTZ + 3.1%
+      priceMap.set("stxtz", stxtzCalculatedPrice);
+      console.log(
+        `🔄 Using XTZ price + 3.1% for stXTZ: $${xtzPrice} * 1.031 = $${stxtzCalculatedPrice.toFixed(
+          6
+        )}`
+      );
+    }
+
     console.log(`Retrieved latest prices for ${priceMap.size} tokens`);
     return priceMap;
   } catch (error) {
     console.error("Error fetching latest token prices:", error);
     return new Map();
   }
+}
+
+// Helper function to create a new Oku order for slippage calculation
+async function createOkuOrderForSlippage(tokenAmount: string): Promise<string> {
+  console.log("🆕 Creating new Oku order for slippage calculation...");
+  const createRequest: OkuCreateRequest = {
+    chain: ETHERLINK_CHAIN_ID,
+    isExactIn: true,
+    tokenAmount: tokenAmount,
+    slippage: 1, // 1% slippage
+  };
+
+  const createResponse = await axios.post<OkuCreateResponse>(
+    `${OKU_BASE_URL}/Create`,
+    createRequest,
+    {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeout: 10000,
+    }
+  );
+
+  const orderId = createResponse.data.orderId;
+  console.log(`✅ Created Oku order with ID: ${orderId}`);
+  return orderId;
 }
 
 export async function fetchAndCacheOkuSlippageData(): Promise<void> {
@@ -200,6 +239,9 @@ export async function fetchAndCacheOkuSlippageData(): Promise<void> {
 
     let successCount = 0;
     let errorCount = 0;
+    let currentOrderId: string | null = null;
+    let pairsProcessedWithCurrentOrder = 0;
+    const ORDER_REFRESH_INTERVAL = 50; // Create new order every 50 pairs
 
     // Process each pair with strict rate limiting
     for (let i = 0; i < tokenPairs.length; i++) {
@@ -270,30 +312,25 @@ export async function fetchAndCacheOkuSlippageData(): Promise<void> {
               `Making OKU request ${requestCount}/${MAX_REQUESTS_PER_HOUR} for ${from.symbol}→${to.symbol} at $${amountUSD}`
             );
 
-            // Step 1: Create order for this specific amount
-            const createRequest: OkuCreateRequest = {
-              chain: ETHERLINK_CHAIN_ID,
-              isExactIn: true,
-              tokenAmount: tokenAmountWithPrecision.toString(),
-              slippage: 1, // 1% slippage
-            };
-
-            const createResponse = await axios.post<OkuCreateResponse>(
-              `${OKU_BASE_URL}/Create`,
-              createRequest,
-              {
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                timeout: 10000,
+            // Create new order if needed (every 50 pairs or first iteration)
+            if (
+              currentOrderId === null ||
+              pairsProcessedWithCurrentOrder >= ORDER_REFRESH_INTERVAL
+            ) {
+              if (currentOrderId !== null) {
+                console.log(
+                  `🔄 Refreshing order after ${pairsProcessedWithCurrentOrder} pairs...`
+                );
               }
-            );
+              currentOrderId = await createOkuOrderForSlippage(
+                tokenAmountWithPrecision.toString()
+              );
+              pairsProcessedWithCurrentOrder = 0;
+            }
 
-            const orderId = createResponse.data.orderId;
-
-            // Step 2: Update quote parameters
+            // Step 1: Update quote parameters with retry logic
             const updateRequest: OkuUpdateQuoteParamsRequest = {
-              orderId,
+              orderId: currentOrderId,
               chain: ETHERLINK_CHAIN_ID,
               enabledMarkets: ["threeroute", "usor"],
               isExactIn: true,
@@ -304,34 +341,149 @@ export async function fetchAndCacheOkuSlippageData(): Promise<void> {
               slippage: 1,
             };
 
-            await axios.post<OkuUpdateQuoteParamsResponse>(
-              `${OKU_BASE_URL}/UpdateQuoteParams`,
-              updateRequest,
-              {
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                timeout: 10000,
-              }
+            console.log(
+              `  📤 Updating quote params for ${from.symbol}→${to.symbol} with ${tokenAmountWithPrecision} tokens...`
             );
+            let updateParamsRetryCount = 0;
+            const updateParamsMaxRetries = 3;
 
-            // Step 3: Get quotes
+            while (updateParamsRetryCount < updateParamsMaxRetries) {
+              try {
+                await axios.post<OkuUpdateQuoteParamsResponse>(
+                  `${OKU_BASE_URL}/UpdateQuoteParams`,
+                  updateRequest,
+                  {
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    timeout: 10000,
+                  }
+                );
+                break; // Success, exit retry loop
+              } catch (error: any) {
+                // Check if error is "order already completed or canceled"
+                if (
+                  error.response?.status === 500 &&
+                  error.response?.data?.message?.includes(
+                    "order already completed or canceled"
+                  )
+                ) {
+                  console.log(
+                    `  🔄 Order ${currentOrderId} already completed/canceled, creating new order...`
+                  );
+                  // Create new order and update currentOrderId
+                  currentOrderId = await createOkuOrderForSlippage(
+                    tokenAmountWithPrecision.toString()
+                  );
+                  pairsProcessedWithCurrentOrder = 0;
+                  // Update the orderId in the request
+                  updateRequest.orderId = currentOrderId;
+                  // Reset retry count since we have a new order
+                  updateParamsRetryCount = 0;
+                  continue;
+                }
+
+                updateParamsRetryCount++;
+                if (updateParamsRetryCount < updateParamsMaxRetries) {
+                  console.log(
+                    `  🔄 Retry ${updateParamsRetryCount}/${updateParamsMaxRetries} updating quote params for ${from.symbol}→${to.symbol} (waiting 5s)...`
+                  );
+                  console.log(error);
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                } else {
+                  console.log(
+                    `  ❌ Max retries reached updating quote params for ${from.symbol}→${to.symbol}`
+                  );
+                  throw error; // Re-throw after max retries
+                }
+              }
+            }
+
+            // Step 2: Get quotes with retry logic
             const quotesRequest: OkuGetQuotesRequest = {
-              orderId,
+              orderId: currentOrderId,
               fetchedRouters: ["threeroute", "usor"],
               waitTime: "5000", // 5 seconds wait time
             };
 
-            const quotesResponse = await axios.post<OkuGetQuotesResponse>(
-              `${OKU_BASE_URL}/GetNewQuotes`,
-              quotesRequest,
-              {
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                timeout: 15000,
-              }
+            console.log(
+              `  📥 Fetching quotes for ${from.symbol}→${to.symbol}... Id: ${quotesRequest.orderId}`
             );
+
+            let quotesResponse: any = null;
+            let retryCount = 0;
+            const maxRetries = 5;
+
+            while (retryCount < maxRetries) {
+              try {
+                quotesResponse = await axios.post<OkuGetQuotesResponse>(
+                  `${OKU_BASE_URL}/GetNewQuotes`,
+                  quotesRequest,
+                  {
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    timeout: 15000,
+                  }
+                );
+
+                // Check if any quotes were fetched successfully
+                const quotes = quotesResponse.data.quotes;
+                const hasFetchedQuotes =
+                  Object.values(quotes).filter((quote: any) => quote.fetched)
+                    .length === 2;
+
+                if (hasFetchedQuotes) {
+                  break; // Success, exit retry loop
+                } else {
+                  // No quotes were fetched, retry
+                  retryCount++;
+                  if (retryCount < maxRetries) {
+                    console.log(
+                      `  🔄 Retry ${retryCount}/${maxRetries} for ${from.symbol}→${to.symbol} - no quotes fetched (waiting 2s)...`
+                    );
+                    await new Promise((resolve) => setTimeout(resolve, 2000));
+                  } else {
+                    console.log(
+                      `  ❌ Max retries reached for ${from.symbol}→${to.symbol} - no quotes fetched`
+                    );
+                    break; // Exit retry loop after max retries
+                  }
+                }
+              } catch (error: any) {
+                // Check if error is "order already completed or canceled"
+                if (
+                  error.response?.status === 500 &&
+                  error.response?.data?.message?.includes(
+                    "order already completed or canceled"
+                  )
+                ) {
+                  console.log(
+                    `  🔄 Order ${currentOrderId} already completed/canceled during quotes fetch, creating new order...`
+                  );
+                  // Create new order and update currentOrderId
+                  currentOrderId = await createOkuOrderForSlippage(
+                    tokenAmountWithPrecision.toString()
+                  );
+                  pairsProcessedWithCurrentOrder = 0;
+                  // Update the orderId in the request
+                  quotesRequest.orderId = currentOrderId;
+                  // Reset retry count since we have a new order
+                  retryCount = 0;
+                  continue;
+                }
+
+                retryCount++;
+                if (retryCount < maxRetries) {
+                  console.log(
+                    `  🔄 Retry ${retryCount}/${maxRetries} for ${from.symbol}→${to.symbol} (waiting 1s)...`
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                } else {
+                  throw error; // Re-throw error after all retries failed
+                }
+              }
+            }
 
             // Process quotes to find the best one
             const quotes = quotesResponse.data.quotes;
@@ -394,6 +546,9 @@ export async function fetchAndCacheOkuSlippageData(): Promise<void> {
               );
               slippageAmounts[amountUSD.toString()] = null;
             }
+
+            // Increment counter for current order
+            pairsProcessedWithCurrentOrder++;
           } catch (amountError) {
             console.error(
               `Error fetching OKU quote for ${from.symbol}→${to.symbol} at $${amountUSD}:`,
@@ -564,6 +719,7 @@ export async function manualOkuSlippageCalculation(): Promise<void> {
     console.log("Manual OKU slippage calculation completed successfully");
   } catch (error) {
     console.error("Manual OKU slippage calculation failed:", error);
+    throw error; // Re-throw to allow proper error handling by the caller
   }
 }
 

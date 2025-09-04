@@ -51,7 +51,7 @@ app.use(express.json());
 
   if (FETCH_ROUTES_ON_STARTUP) {
     console.log("Running initial routes fetch...");
-    // await fetchAndCacheLiFiData();
+    await fetchAndCacheLiFiData();
     await fetchAndCacheOkuData();
   } else {
     console.log(

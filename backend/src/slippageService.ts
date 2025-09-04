@@ -1,5 +1,5 @@
 import axios from "axios";
-import { query } from "./db";
+import { query, PRICES_TABLE } from "./db";
 import { SlippageData, QuoteResponse, PairRoutes } from "./types";
 
 // Interface for token price data
@@ -36,7 +36,7 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
         token, 
         price, 
         timestamp
-      FROM price 
+      FROM ${PRICES_TABLE} 
       ORDER BY token, timestamp DESC
     `);
 
@@ -51,6 +51,19 @@ async function getLatestTokenPrices(): Promise<Map<string, number>> {
       priceMap.set("lbtc", wbtcPrice);
       console.log(
         `🔄 Temporary workaround: Using WBTC price ($${wbtcPrice}) for LBTC`
+      );
+    }
+
+    // Use XTZ price + 3.1% for stXTZ if stXTZ price not present
+    const xtzPrice = priceMap.get("xtz");
+    const stxtzPrice = priceMap.get("stxtz");
+    if (xtzPrice && !stxtzPrice) {
+      const stxtzCalculatedPrice = xtzPrice * 1.031; // XTZ + 3.1%
+      priceMap.set("stxtz", stxtzCalculatedPrice);
+      console.log(
+        `🔄 Using XTZ price + 3.1% for stXTZ: $${xtzPrice} * 1.031 = $${stxtzCalculatedPrice.toFixed(
+          6
+        )}`
       );
     }
 
