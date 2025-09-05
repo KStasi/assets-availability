@@ -38,11 +38,12 @@ function App() {
         console.log("Fetching tokens and routes from backend");
 
         // Fetch tokens, routes, and slippage data in parallel
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
         const [tokensResponse, routesResponse, slippageResponse] =
           await Promise.all([
-            fetch("http://localhost:3001/tokens"),
-            fetch("http://localhost:3001/routes"),
-            fetch("http://localhost:3001/slippage"),
+            fetch(`${API_URL}/tokens`),
+            fetch(`${API_URL}/routes`),
+            fetch(`${API_URL}/slippage`),
           ]);
 
         if (!tokensResponse.ok || !routesResponse.ok || !slippageResponse.ok) {
