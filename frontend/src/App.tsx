@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { PairRoutes, SlippageData } from "@assets-availability/types";
+import Graph from "./Graph";
 import "./App.css";
 
 interface Token {
@@ -14,6 +15,7 @@ interface MatrixData {
   routes: {
     [key: string]: { [key: string]: { [aggregator: string]: string[] } };
   };
+  routesArray: PairRoutes[]; // Add the actual routes array
   lastUpdated?: string;
   routeCount?: number;
   providers?: {
@@ -92,6 +94,7 @@ function App() {
           tokens: tokenSymbols,
           matrix,
           routes: routeData,
+          routesArray: routes, // Add the actual routes array
           lastUpdated: routesData.lastUpdated,
           routeCount: routesData.count,
           providers: routesData.providers,
@@ -402,6 +405,11 @@ function App() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Graph Visualization */}
+      {data.slippageData && data.slippageData.length > 0 && (
+        <Graph slippageData={data.slippageData} routesData={data.routesArray} />
       )}
     </div>
   );
